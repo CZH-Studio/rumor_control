@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import random
+random.seed(42)
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -209,7 +210,19 @@ async def running(
     response = await nurse_agent.perform_action_by_data("create_post", content=formatted_content)
     post_id = response["post_id"]
     tasks = []
-    for _, agent in agent_graph.get_agents():
+    
+    patients_id = []
+    patient_agents = []
+    for edge in agent_graph.get_edges():
+        if edge[1] == 32:
+            patients_id.append(edge[0])
+    # print(patients_id)
+    if patients_id is not None:
+        for patient_id in random.sample(patients_id, int(len(patients_id)*0.2)):
+            patient_agents.append(agent_graph.get_agent(patient_id))
+    else: patient_agents = random.sample(agent_graph.get_agents(), len(agent_graph.get_agents())*0.1)
+    
+    for agent in patient_agents:
         if agent.user_info.is_controllable is False:
             tasks.append(agent.perform_vaccine(post_id))
     await asyncio.gather(*tasks)
@@ -234,8 +247,8 @@ async def running(
                     "active_threshold"][int(simulation_time_hour % 24)]
                 if agent_ac_prob < threshold:
                     tasks.append(agent.perform_action_by_llm())
-            else:
-                await agent.perform_action_by_hci() #手动输入行为
+            # else:
+            #     await agent.perform_action_by_hci() #手动输入行为
 
         await asyncio.gather(*tasks)
         # agent_graph.visualize(f"timestep_{timestep}_social_graph.png")

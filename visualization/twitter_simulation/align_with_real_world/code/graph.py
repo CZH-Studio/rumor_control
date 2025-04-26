@@ -35,6 +35,9 @@ class prop_graph:
         conn = sqlite3.connect(self.db_path)
         query = "SELECT post_id, user_id, original_post_id, created_at FROM post"
         df = pd.read_sql(query, conn)
+        # outputpath = 'result_test.csv'
+        # df.to_csv(outputpath, sep=',', index=False, header=True)
+        # print(df)
         conn.close()
 
         # 确定根节点（original_post_id为空的帖子）
@@ -69,13 +72,13 @@ class prop_graph:
                 
             # 计算时间差（假设created_at以分钟为单位）
             time_diff = row['created_at'] - root_time
+            print(time_diff)
             
             # 添加节点和边
             if current_user not in self.G:
                 self.G.add_node(current_user, timestamp=time_diff)
             self.G.add_edge(original_user, current_user)
 
-        # 后续统计逻辑保持不变...
         # Get the start and end timestamps of propagation
         self.start_timestamp = 0
         timestamps = nx.get_node_attributes(self.G, "timestamp")

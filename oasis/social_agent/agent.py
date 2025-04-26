@@ -84,7 +84,7 @@ class SocialAgent:
         model_config = ChatGPTConfig( #通用config
                 tools=self.env.action.get_openai_function_list(), #提供模型可用的功能函数
                 temperature=0.5,
-                tool_choice="required",
+                # tool_choice="required",
             )
         if self.is_openai_model:
             self.model_backend = ModelFactory.create( #创建openai模型
