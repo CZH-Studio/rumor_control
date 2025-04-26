@@ -1,0 +1,6 @@
+choose some actions from the following functions:
+
+- repost: when you want to spread it
+- quote_post: when you want to share a post while adding your own thoughts or context to it
+- like_post: when you feel something interesting or you agree with
+- follow: when you respect someone, love someone, or care about someone
