@@ -204,9 +204,13 @@ async def running(
     #mist分析
     # await mist_analysis(agent_graph, "mist/mist_B4.csv")
     nurse_agent = agent_graph.get_agent(111)
-    title = "Don't become a puppet!"
-    content = "the media sometimes does not check facts before publishing information that turns out to be inaccurate！think before you spread it!"
-    formatted_content = f"Title: {title}.\nContent: {content}"
+    try:
+        formatted_content = await nurse_agent.generate_vaccine(1)
+        # print("formatted_content: ",formatted_content)
+    except Exception as e:
+        title = "Don't become a puppet!"
+        content = "the media sometimes does not check facts before publishing information that turns out to be inaccurate！think before you spread it!"
+        formatted_content = f"Title: {title}.\nContent: {content}"
     response = await nurse_agent.perform_action_by_data("create_post", content=formatted_content)
     post_id = response["post_id"]
     tasks = []

@@ -40,7 +40,7 @@ class ActionType(Enum):
     UNDO_DISLIKE_COMMENT = "undo_dislike_comment"
     DO_NOTHING = "do_nothing"
     PURCHASE_PRODUCT = "purchase_product"
-    DRAG_OUT = "drag_out"
+    FETCH_POST = "fetch_post"
 
 
 class RecsysType(Enum):

@@ -268,6 +268,8 @@ class Platform:
             # randomly select a specified number of post_ids
             if post_id != -1:
                 refresh_rec_post_count = self.refresh_rec_post_count-1
+            else:
+                refresh_rec_post_count = self.refresh_rec_post_count
             if len(selected_post_ids) >= refresh_rec_post_count:
                 selected_post_ids = random.sample(selected_post_ids,
                                                   refresh_rec_post_count)
@@ -323,7 +325,7 @@ class Platform:
             return {"success": False, "error": str(e)}
     
     
-    async def drag_out(self, agent_id: int):
+    async def fetch_post(self, agent_id: int):
         # Retrieve posts for a specific id from the rec table
         # print("post id: ",agent_id)
         try:

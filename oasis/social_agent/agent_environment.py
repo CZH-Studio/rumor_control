@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from string import Template
 
 from oasis.social_agent.agent_action import SocialAction
-from oasis.social_platform.typing import ActionType
+from oasis.social_agent.agent_action import ActionType
 
 class Environment(ABC):
 
@@ -59,6 +59,14 @@ class SocialEnvironment(Environment):
     async def get_follows_env(self) -> str:
         # TODO: Implement follows env
         return self.follows_env_template.substitute(num_follows=0)
+    
+    async def get_post(self, post_id: str) -> str:
+        message_id = await self.action.channel.write_to_receive_queue( #放入接收队列，等待被DB捕获执行
+            (post_id, "", ActionType.FETCH_POST.value))
+        post= await self.action.channel.read_from_send_queue(message_id) #从发送队列中读取执行结果
+        post = json.dumps(post[2]["posts"][0], indent=4)
+        # print("post: ",post)
+        return post
 
     async def to_text_prompt( #覆写父类，将所有刷新的环境信息整合到提示中
         self,

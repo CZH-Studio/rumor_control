@@ -72,7 +72,7 @@ class prop_graph:
                 
             # 计算时间差（假设created_at以分钟为单位）
             time_diff = row['created_at'] - root_time
-            print(time_diff)
+            # print(time_diff)
             
             # 添加节点和边
             if current_user not in self.G:

@@ -304,6 +304,94 @@ class SocialAgent:
             self.memory.write_record(
                 MemoryRecord(message=agent_msg,
                             role_at_backend=OpenAIBackendRole.ASSISTANT))
+    
+    async def generate_vaccine(self, post_id):
+            source_post = await self.env.get_post(post_id)
+            # print("source_post: ", source_post)
+            user_msg = BaseMessage.make_user_message(
+                role_name="User",
+                content=(
+                    f"""you see a post: {source_post}. Categorize the topic of the post from the following options:
+                     1.Business
+                     2.Politics
+                     3.Culture & Society
+                     4.entertainment
+                     Ensure your output is domain, not number, don't output anything else.
+                    """
+                    ),
+            )
+            openai_messages = [user_msg.to_openai_user_message()]
+            if True:
+                try:
+                    response = self.model_backend.run(openai_messages)
+                    print("domain: ",response.choices[0].message.content)
+                    # agent_log.info(f"Agent {self.agent_id} response: {response}")
+                    ans = response.choices[0].message.content
+                except Exception as e:
+                    print(e)
+                    ans = "news"
+            user_msg = BaseMessage.make_user_message(
+                role_name="User",
+                content=(
+                    f"""you are a knowledgeable expert of the {ans} domain. Now there is a rumer post 
+                    on the social media that is factually wrong: {source_post}. Please write a post to inoculate people
+                    from the misinformation. Your post content should follow the following format but more concise:
+                    1. State the truth first: Lead with the fact if it’s clear, pithy, and sticky—make 
+                    it simple, concrete,and plausible. Provide a factual alternative that fills a causal “gap”, 
+                    explaining what happened if the misinformation is corrected. Do not rely on a simple 
+                    retraction (“this claim is not true”).
+                    2. Point to misinformation: Warn that a myth is coming. Repeat the misinformation, 
+                    only once, directly prior to the correction.
+                    3. Explain why misinformation is wrong: Explain how the myth misleads. Point out 
+                    logical or argumentative fallacies underlying the misinformation.
+                    4. State the truth again: Finish by reinforcing the fact. Repeat the fact multiple 
+                    times if possible.
+                    
+                    here is an example of a anti-rumer post about climate change that follows the format:
+                    Scientists observe human fingerprints all over our climate
+The warming effect from greenhouse gases like 
+carbon dioxide has been confirmed by many lines 
+of evidence. Aircraft and satellites measure less 
+heat escaping to space at the exact wavelengths 
+that carbon dioxide absorbs energy. The upper 
+atmosphere cools while the lower atmosphere 
+warms—a distinct pattern of greenhouse 
+warming. 
+A common climate myth is that climate has always 
+changed naturally in the past, therefore modern 
+climate change must be natural also.
+This argument commits the single cause fallacy, 
+falsely assuming that because natural factors 
+have caused climate change in the past, then 
+they must always be the cause of climate change.
+This logic is the same as seeing a murdered body 
+and concluding that people have died of natural 
+causes in the past, so the murder victim must 
+have also died of natural causes.
+Just as a detective finds clues in a crime scene, 
+scientists have found many clues in climate 
+measurements confirming humans are causing 
+global warming. Human-caused global warming is 
+a measured fact.
+                    
+                    use a simple, natural and novel toungue so that everyone understand. Don't make it paragraphic.
+                    Output: Title: title of the post.\nContent: your content
+                    """
+                    ),
+            )
+            openai_messages = [user_msg.to_openai_user_message()]
+            if True:
+                try:
+                    response = self.model_backend.run(openai_messages)
+                    # agent_log.info(f"Agent {self.agent_id} response: {response}")
+                    vacc_post = response.choices[0].message.content
+                    # print("vacc_post: ",vacc_post)
+                    return vacc_post
+                except Exception as e:
+                    print(e)
+                    return e
+                    
+            
 
 
     async def perform_mist_test(self):
