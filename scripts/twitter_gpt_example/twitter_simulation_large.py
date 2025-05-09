@@ -28,6 +28,7 @@ from typing import Any
 import pandas as pd
 from colorama import Back
 from yaml import safe_load
+from rumor_control_group.src.rumor_control_group.flow import RumorControlFlow
 
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
@@ -203,33 +204,35 @@ async def running(
     
     #mist分析
     # await mist_analysis(agent_graph, "mist/mist_B4.csv")
-    nurse_agent = agent_graph.get_agent(111)
-    try:
-        formatted_content = await nurse_agent.generate_vaccine(1)
-        # print("formatted_content: ",formatted_content)
-    except Exception as e:
-        title = "Don't become a puppet!"
-        content = "the media sometimes does not check facts before publishing information that turns out to be inaccurate！think before you spread it!"
-        formatted_content = f"Title: {title}.\nContent: {content}"
-    response = await nurse_agent.perform_action_by_data("create_post", content=formatted_content)
-    post_id = response["post_id"]
-    tasks = []
     
-    patients_id = []
-    patient_agents = []
-    for edge in agent_graph.get_edges():
-        if edge[1] == 32:
-            patients_id.append(edge[0])
-    # print(patients_id)
-    if patients_id is not None:
-        for patient_id in random.sample(patients_id, int(len(patients_id)*0.2)):
-            patient_agents.append(agent_graph.get_agent(patient_id))
-    else: patient_agents = random.sample(agent_graph.get_agents(), len(agent_graph.get_agents())*0.1)
     
-    for agent in patient_agents:
-        if agent.user_info.is_controllable is False:
-            tasks.append(agent.perform_vaccine(post_id))
-    await asyncio.gather(*tasks)
+    # nurse_agent = agent_graph.get_agent(111)
+    # try:
+    #     formatted_content = await nurse_agent.generate_vaccine(1)
+    #     # print("formatted_content: ",formatted_content)
+    # except Exception as e:
+    #     title = "Don't become a puppet!"
+    #     content = "the media sometimes does not check facts before publishing information that turns out to be inaccurate！think before you spread it!"
+    #     formatted_content = f"Title: {title}.\nContent: {content}"
+    # response = await nurse_agent.perform_action_by_data("create_post", content=formatted_content)
+    # post_id = response["post_id"]
+    # # tasks = []
+    # patients_id = []
+    # patient_agents = []
+    # for edge in agent_graph.get_edges():
+    #     if edge[1] == 32:
+    #         patients_id.append(edge[0])
+    # # print(patients_id)
+    # if patients_id is not None:
+    #     for patient_id in random.sample(patients_id, int(len(patients_id)*0.2)):
+    #         patient_agents.append(agent_graph.get_agent(patient_id))
+    # else: patient_agents = random.sample(agent_graph.get_agents(), len(agent_graph.get_agents())*0.1)
+    
+    # for agent in patient_agents:
+    #     if agent.user_info.is_controllable is False:
+    #         tasks.append(agent.perform_vaccine(post_id))
+    # await asyncio.gather(*tasks)
+    
 
     # await mist_analysis(agent_graph, "mist/mist_Aft.csv")
 
@@ -255,6 +258,7 @@ async def running(
             #     await agent.perform_action_by_hci() #手动输入行为
 
         await asyncio.gather(*tasks)
+        RumorControlFlow().kickoff(agent_graph)
         # agent_graph.visualize(f"timestep_{timestep}_social_graph.png")
 
     await twitter_channel.write_to_receive_queue((None, None, ActionType.EXIT))

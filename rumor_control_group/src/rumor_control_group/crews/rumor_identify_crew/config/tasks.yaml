@@ -1,0 +1,7 @@
+rumor_identification:
+  description: >
+    Identify whether the given message is a rumor or not.
+
+  expected_output: >
+    yes/no. don't output anything else.
+  agent: rumor_identifier_agent
