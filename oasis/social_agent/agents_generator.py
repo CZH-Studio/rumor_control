@@ -225,17 +225,31 @@ async def generate_agents(
 
     # generate_log.info('twitter creat post finished.')
     
+    def get_predecessors_by_name(graph, target_name):
+    # 找到目标节点的顶点对象
+        target_vertex = graph.vs.find(name=target_name)
+        # 获取所有指向该节点的边的源节点索引
+        predecessor_indices = graph.predecessors(target_vertex.index)
+        # 获取这些节点的name属性
+        predecessor_names = [graph.vs[i]["name"] for i in predecessor_indices]
+        return predecessor_names
+    
     if rumor_control:
         anchor_users = []
         anchor_point = []
         g = agent_graph.graph
         num_anchor = g.vcount()
-        in_degrees = np.array(g.degree(mode="in"))[:num_anchor*control_rate]
+        in_degrees = np.array(g.degree(mode="in")[:int(num_anchor*control_rate)])
         sorted_indices = np.argsort(-in_degrees)
         for idx in sorted_indices:
-            anchor_point.append(idx)
-            anchor_users.append(random.choice(g.neighbors(idx, mode="in")))
-            agent_graph.get_agent(idx).user_info.is_controllable = True
+            print("sorted_indices: ",idx, in_degrees[idx])
+        sorted_names = [g.vs[index]["name"] for index in sorted_indices]
+        
+        for name in sorted_names:
+            print("anchor_point: ",name)
+            anchor_point.append(int(name))
+            anchor_users.append(int(random.choice(get_predecessors_by_name(g, name))))
+            agent_graph.get_agent(int(name)).user_info.is_controllable = True
 
     return agent_graph, anchor_users, anchor_point
 

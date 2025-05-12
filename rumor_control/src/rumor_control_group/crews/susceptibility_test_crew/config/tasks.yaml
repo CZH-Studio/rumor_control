@@ -1,32 +1,39 @@
-evaluate_candidate:
+recsys_predict:
   description: >
-    Evaluate a candidate's bio based on the provided job description.
+    Evaluate a user's susceptibility to rumors online based on the provided personal profile
+    and choose the {num} most susceptible user for the rumor clarification.
 
-    Use your expertise to carefully assess how well the candidate fits the job requirements. Consider key factors such as:
-    - Skill match
-    - Relevant experience
-    - Cultural fit
-    - Growth potential
+    Use your expertise in social psychology and focus on psychological factors that contribute to susceptibility and
+    identify the most susceptible users.
 
-    CANDIDATE BIO
-    -------------
-    Candidate ID: {candidate_id}
-    Name: {name}
-    Bio:
-    {bio}
-
-    JOB DESCRIPTION
-    ---------------
-    {job_description}
-
-    ADDITIONAL INSTRUCTIONS
-    -----------------------
-    Your final answer MUST include:
-    - The candidates unique ID
-    - A score between 1 and 100. Don't use numbers like 100, 75, or 50. Instead, use specific numbers like 87, 63, or 42.
-    - A detailed reasoning, considering the candidate’s skill match, experience, cultural fit, and growth potential.
-    {additional_instructions}
+    PERSONAL PROFILE:
+    [
+      {
+        "user_id": user_id_1,
+        "user_profile": "user_profile_1",
+      },
+      {
+        "user_id": user_id_1,
+        "user_profile": "user_profile_1",
+      },
+      ...
+    ]
+    
+    for each user you choosed, your answer MUST include:
+    - The selected user's ID(int)
+    - A breif reasoning for your choice with less than 20 words
 
   expected_output: >
-    A very specific score from 1 to 100 for the candidate, along with a detailed reasoning explaining why you assigned this score.
-  agent: hr_evaluation_agent
+    A list of user IDs and a brief reasoning for each choice:
+    [
+      {
+        "user_id": user_id_1,
+        "reasoning": "reasoning for user_id_1"
+      },
+      {
+        "user_id": user_id_2,
+        "reasoning": "reasoning for user_id_2"
+      },
+      ...
+    ]
+  agent: suscept_test_agent

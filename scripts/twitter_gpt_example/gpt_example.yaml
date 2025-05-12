@@ -13,7 +13,7 @@ model:
   model_random_seed: 42
   cfgs:
     - model_type: glm-4-flash
-      num: 111
+      num: 110
       server_url: null
       model_path: null
       stop_tokens: null

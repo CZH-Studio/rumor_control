@@ -46,7 +46,8 @@ tfidf_vectorizer = TfidfVectorizer()
 # Prepare the twhin model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model_path = "c:/Users/35009/.cache/huggingface/hub/models--Twitter--twhin-bert-base/snapshots/82ac392ce81f94560c391311ee2ddd024c5ac1fc/"
+# model_path = "c:/Users/35009/.cache/huggingface/hub/models--Twitter--twhin-bert-base/snapshots/82ac392ce81f94560c391311ee2ddd024c5ac1fc/"
+model_path = 'Twitter/twhin-bert-base'
 
 twhin_tokenizer = AutoTokenizer.from_pretrained(
     pretrained_model_name_or_path=model_path,

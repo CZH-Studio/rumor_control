@@ -1,42 +1,40 @@
-from typing import List
-
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.knowledge.source.text_file_knowledge_source import TextFileKnowledgeSource
+from typing import List
 
-textknowledge = TextFileKnowledgeSource(file_paths=["susceptable_features.txt"])
+textknowledge = TextFileKnowledgeSource(file_paths=["recommendation_systems.txt"])
 
 @CrewBase
-class SusceptibilityTestCrew:
-    """Susceptibility Test Crew"""
+class RecommendPredictCrew:
+    """recommend predict crew"""
 
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
 
     @agent
-    def suscept_test_agent(self) -> Agent:
+    def recommend_predict_agent(self) -> Agent:
         return Agent(
-            config=self.agents_config["suscept_test_agent"],
-            llm = "glm-4",
+            config=self.agents_config["recommend_predict_agent"],
             verbose=True,
+            llm="glm-4",
         )
 
     @task
-    def suscept_evaluation_task(self) -> Task:
+    def recsys_predict_task(self) -> Task:
         return Task(
-            config=self.tasks_config["suscept_evaluation"],
-            output_pydantic=List[dict[str, int|str]],
+            config=self.tasks_config["recsys_predict"],
+            output_pydantic=List[int],
         )
 
     @crew
     def crew(self) -> Crew:
-        """Creates the Lead Score Crew"""
+        """Creates the recommend predict crew"""
         return Crew(
             agents=self.agents,
             tasks=self.tasks,
-            llm="glm-4",
-            memory=True,
             process=Process.sequential,
             verbose=True,
+            llm="glm-4",
             knowledge_sources=[textknowledge],
         )

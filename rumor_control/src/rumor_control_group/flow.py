@@ -16,7 +16,7 @@ from crewai import LLM
 
 from rumor_control.src.rumor_control_group.crews.rumor_identify_crew import RumorIdentifyCrew
 from rumor_control.src.rumor_control_group.crews.susceptibility_test_crew import SusceptibilityTestCrew
-from rumor_control.src.rumor_control_group.crews.recommend_predict_crew import recommend_predict_crew
+from rumor_control.src.rumor_control_group.crews.recommend_predict_crew import RecommendPredictCrew
 from rumor_control.src.rumor_control_group.crews.rumor_refute_crew import rumor_refute_crew
 from rumor_control.src.rumor_control_group.crews.rumor_inoculation_crew import rumor_inoculation_crew
 from rumor_control.src.rumor_control_group.crews.broadcast_crew import broadcast_crew
@@ -176,17 +176,23 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                 continue
             #对于所有感染用户，选择最易感的20%辟谣
             print("selecting refute users ...")
+            profiles = []
+            for user_id in newly_infected[0]:
+                profiles.append({
+                    "user_id": user_id,
+                    "user_profile": self.state.agent_graph.get_agent(user_id).user_info.description,
+                    }
+                )
             ref_apply = SusceptibilityTestCrew().crew().kickoff(
                 input={
-                    "anchor_user":anchor_user,
-                    "candidates":newly_infected[0],
-                    "graph":self.state.agent_graph,
-                    "proportion":0.2
+                    "num":0.2*len(newly_infected[0]),
+                    "personal_profile":profiles,
                     }#返回易感用户列表
                 )
-            self.state.refute_applyment.update(set(ref_apply))
-            self.state.territory.update(set(ref_apply+[newly_infected[1]])) #更新领土(已经采取行动)
-            self.state.inspect_division[anchor_id].private_territory.update(set(ref_apply+[newly_infected[1]]))
+            ref = [selec_usr["user_id"] for selec_usr in ref_apply]
+            self.state.refute_applyment.update(set(ref))
+            self.state.territory.update(set(ref+[newly_infected[1]])) #更新领土(已经采取行动)
+            self.state.inspect_division[anchor_id].private_territory.update(set(ref+[newly_infected[1]]))
             
             g = self.state.agent_graph.graph
             #选择预接种用户
@@ -195,17 +201,22 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                 #获取感染用户的所有关注者
                 incoming_edges = g.es.select(_target=user.agent_id)
                 sus = list(set([edge.source for edge in incoming_edges]) - self.state.territory)
+            for user_id in sus:
+                profiles.append({
+                    "user_id": user_id,
+                    "user_profile": self.state.agent_graph.get_agent(user_id).user_info.description,
+                    }
+                )
             inoc_apply = SusceptibilityTestCrew().crew().kickoff(
                 input={
-                    "anchor_user":anchor_user,
-                    "candidates":sus,
-                    "graph":self.state.agent_graph,
-                    "proportion":0.2
+                    "num":0.2*len(sus),
+                    "personal_profile":profiles,
                     }#返回预接种用户列表
                 )
-            self.state.inoculation_applyment.update(set(inoc_apply))
-            self.state.territory.update(set(inoc_apply)) #更新领土(正在监视)
-            self.state.inspect_division[anchor_id].private_territory.update(set(inoc_apply))
+            inoc = [selec_usr["user_id"] for selec_usr in inoc_apply]
+            self.state.inoculation_applyment.update(set(inoc))
+            self.state.territory.update(set(inoc)) #更新领土(正在监视)
+            self.state.inspect_division[anchor_id].private_territory.update(set(inoc))
             
             #通过推荐预测实现跨域预接种
             print("selecting cross-domain inoculation users ...")
@@ -215,24 +226,36 @@ class RumorControlFlow(Flow[RumorInfectionState]):
             for other_anchor in n.remove(anchor_user):
                 #如果还未传播到该锚点或传播范围较小
                 if list.count(self.state.inspect_division[other_anchor.agnet_id].userstate.susceptible) < 2:#<min
-                    cand = self.state.inspect_division[other_anchor.agnet_id].userstate.susceptible[0]
+                    cand = self.state.inspect_division[other_anchor.agnet_id].userstate.susceptible[0]#只取第一个
                     candidates.append(cand)
                     map[cand] = other_anchor
-            
-            rec_apply = recommend_predict_crew.crew().kickoff(
+            recievers = [{"user_id": re, "user_profile": self.state.agent_graph.get_agent(re).user_info.description} for re in candidates]
+            rec_apply_far = RecommendPredictCrew.crew().kickoff(
                 input={
-                    "user":candidates,
-                    "graph":self.state.agent_graph,
+                    "num":0.2*len(candidates),
+                    "rec_type": self.state.agent_graph.get_agent(user_id).user_info.recsys_type,
+                    "poster": {
+                        "user_id": anchor_user.agent_id, 
+                        "user_profile": self.state.agent_graph.get_agent(user_id).user_info.description,
+                        "post": self.state.rumor_sources[0],
+                    },
+                    "recievers": recievers,
                     }
                 )
-            self.state.inoculation_applyment.update(set(rec_apply))
-            self.state.territory.update(set(rec_apply))
-            for rec_cand in rec_apply:
-                self.state.inspect_division[map[rec_cand]].private_territory.add(rec_cand)
-                #激活该锚点使之开始监听
-                self.state.inspect_division[map[rec_cand]].triggered = True
+            if not rec_apply_far:
+                continue
+            else:
+                self.state.inoculation_applyment.update(set(rec_apply_far))
+                self.state.territory.update(set(rec_apply_far))
+                for rec_cand in rec_apply_far:
+                    self.state.inspect_division[map[rec_cand]].private_territory.add(rec_cand)
+                    #激活该锚点使之开始监听
+                if not self.state.inspect_division[map[rec_cand]].triggered:
+                    self.state.inspect_division[map[rec_cand]].triggered = True
         
         print("select finished, ready to refute. ")
+        return ref_apply, inoc_apply
+        
     
     @listen("silent")
     def silent(self):

@@ -28,13 +28,13 @@ from typing import Any
 import pandas as pd
 from colorama import Back
 from yaml import safe_load
-from rumor_control.src.rumor_control_group.flow import RumorControlFlow
+# from rumor_control.src.rumor_control_group.flow import RumorControlFlow
 
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
 from oasis.clock.clock import Clock
-from oasis.social_agent.agents_generator import generate_agents, gen_control_twitter_agents_with_data
+from oasis.social_agent.agents_generator import generate_agents
 from oasis.social_platform.channel import Channel
 from oasis.social_platform.platform import Platform
 from oasis.social_platform.typing import ActionType
@@ -193,7 +193,8 @@ async def running(
         inference_channel=inference_channel,
         start_time=start_time,
         recsys_type=recsys_type,
-        # agent_graph=agent_graph,
+        agent_graph=None,
+        neo4j_config=None,
         action_space_prompt=action_prompt,
         twitter=infra,
         is_openai_model=is_openai_model,
@@ -244,7 +245,7 @@ async def running(
 
     # await mist_analysis(agent_graph, "mist/mist_Aft.csv")
     
-    Rumor_control_flow = RumorControlFlow(anchor_point, anchor_users)
+    # Rumor_control_flow = RumorControlFlow(anchor_point, anchor_users)
 
     for timestep in range(1, num_timesteps + 1):
         os.environ["SANDBOX_TIME"] = str(timestep * 3)
@@ -267,7 +268,7 @@ async def running(
             # else:
             #     await agent.perform_action_by_hci() #手动输入行为
         await asyncio.gather(*tasks)
-        Rumor_control_flow.kickoff(agent_graph)
+        # Rumor_control_flow.kickoff(agent_graph)
         # agent_graph.visualize(f"timestep_{timestep}_social_graph.png")
 
     await twitter_channel.write_to_receive_queue((None, None, ActionType.EXIT))
