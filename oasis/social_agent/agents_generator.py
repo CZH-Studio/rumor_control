@@ -46,6 +46,9 @@ async def generate_agents(
     neo4j_config: Neo4jConfig | None = None,
     is_openai_model: bool = False,
     mist_type: str = "MIST-20",
+    rumor_control: bool = False,
+    control_rate: float = 0.1,
+    
 ) -> AgentGraph:
     """Generate and return a dictionary of agents from the agent
     information CSV file. Each agent is added to the database and
@@ -127,8 +130,7 @@ async def generate_agents(
             profile=profile,
             recsys_type=recsys_type,
         )
-
-        # model_type: ModelType = model_types[agent_id]
+        
         model_type = ModelType.GLM_4_FLASH
 
         agent = SocialAgent(
@@ -222,8 +224,20 @@ async def generate_agents(
                                               commit=True)
 
     # generate_log.info('twitter creat post finished.')
+    
+    if rumor_control:
+        anchor_users = []
+        anchor_point = []
+        g = agent_graph.graph
+        num_anchor = g.vcount()
+        in_degrees = np.array(g.degree(mode="in"))[:num_anchor*control_rate]
+        sorted_indices = np.argsort(-in_degrees)
+        for idx in sorted_indices:
+            anchor_point.append(idx)
+            anchor_users.append(random.choice(g.neighbors(idx, mode="in")))
+            agent_graph.get_agent(idx).user_info.is_controllable = True
 
-    return agent_graph
+    return agent_graph, anchor_users, anchor_point
 
 
 async def gen_control_twitter_agents_with_data(

@@ -3,8 +3,8 @@ from crewai.project import CrewBase, agent, crew, task
 
 
 @CrewBase
-class recommend_predict_crew:
-    """recommend_predict_crew"""
+class rumor_refute_crew:
+    """Lead Score Crew"""
 
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
@@ -20,12 +20,11 @@ class recommend_predict_crew:
     def evaluate_candidate_task(self) -> Task:
         return Task(
             config=self.tasks_config["evaluate_candidate"],
-            output_pydantic=
         )
 
     @crew
     def crew(self) -> Crew:
-        """Creates the recommend_predict_crew"""
+        """Creates the Lead Score Crew"""
         return Crew(
             agents=self.agents,
             tasks=self.tasks,

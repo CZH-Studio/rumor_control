@@ -3,30 +3,28 @@ from crewai.project import CrewBase, agent, crew, task
 
 
 @CrewBase
-class rumor_identify_crew:
-    """rumor identify crew"""
+class rumor_inoculation_crew:
+    """Lead Score Crew"""
 
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
 
     @agent
-    def rumor_identifier(self) -> Agent:
+    def hr_evaluation_agent(self) -> Agent:
         return Agent(
-            config=self.agents_config["rumor_identifier_agent"],
+            config=self.agents_config["hr_evaluation_agent"],
             verbose=True,
-            allow_delegation=False,
         )
 
     @task
-    def rumor_identification_task(self) -> Task:
+    def evaluate_candidate_task(self) -> Task:
         return Task(
-            config=self.tasks_config["rumor_identification"],
-            verbose=True,
+            config=self.tasks_config["evaluate_candidate"],
         )
 
     @crew
     def crew(self) -> Crew:
-        """Creates the rumor identify Crew"""
+        """Creates the Lead Score Crew"""
         return Crew(
             agents=self.agents,
             tasks=self.tasks,

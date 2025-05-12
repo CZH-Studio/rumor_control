@@ -1,32 +1,32 @@
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
-from lead_score_flow.types import CandidateScore
 
 
 @CrewBase
-class LeadScoreCrew:
-    """Lead Score Crew"""
+class RumorIdentifyCrew:
+    """rumor identify crew"""
 
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
 
     @agent
-    def hr_evaluation_agent(self) -> Agent:
+    def rumor_identifier(self) -> Agent:
         return Agent(
-            config=self.agents_config["hr_evaluation_agent"],
+            config=self.agents_config["rumor_identifier_agent"],
             verbose=True,
+            allow_delegation=False,
         )
 
     @task
-    def evaluate_candidate_task(self) -> Task:
+    def rumor_identification_task(self) -> Task:
         return Task(
-            config=self.tasks_config["evaluate_candidate"],
-            output_pydantic=CandidateScore,
+            config=self.tasks_config["rumor_identification"],
+            verbose=True,
         )
 
     @crew
     def crew(self) -> Crew:
-        """Creates the Lead Score Crew"""
+        """Creates the rumor identify Crew"""
         return Crew(
             agents=self.agents,
             tasks=self.tasks,

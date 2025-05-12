@@ -86,13 +86,15 @@ class SocialAgent:
                 temperature=0.5,
                 # tool_choice="required",
             )
-        if self.is_openai_model:
+        if self.model_type == None:
+            pass
+        elif self.is_openai_model:
             self.model_backend = ModelFactory.create( #创建openai模型
                 model_platform=ModelPlatformType.OPENAI, #基于openai平台
-                model_type=ModelType(model_type), #openai模型类型
+                model_type=ModelType(self.model_type), #openai模型类型
                 model_config_dict=model_config.as_dict(), #注入参数
             )
-        else:
+        elif self.model_type[:3] == "glm":
             model_config_dict = model_config.as_dict()
             filtered_config = {
                 k: v for k, v in model_config_dict.items()
@@ -100,9 +102,10 @@ class SocialAgent:
             }
             self.model_backend = ModelFactory.create( #创建glm模型
                 model_platform=ModelPlatformType.ZHIPU,
-                model_type=ModelType(model_type),
+                model_type=ModelType(self.model_type),
                 model_config_dict=filtered_config,
             )
+       
 
         context_creator = ScoreBasedContextCreator( #定义openai格式的上下文创建器，最大token为4096
             # OpenAITokenCounter(ModelType.GPT_3_5_TURBO),
@@ -127,8 +130,12 @@ class SocialAgent:
             "What do you think Helen should do?")
         news, self.mist_label = get_data(self.mist_type)
         self.mist_test_prompt = get_prompt(self.user_info.get_user_description(), news)
+        self.private_message_id = -1
 
     async def perform_action_by_llm(self):
+        if self.private_message_id != -1:
+            await self.perform_vaccine(self.private_message_id)
+            self.private_message_id = -1
         # Get posts:
         env_prompt = await self.env.to_text_prompt() #将所有刷新的环境信息整合到提示中
         user_prompt = self.user_info.get_user_description() #将用户信息整合到提示中

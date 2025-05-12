@@ -28,7 +28,7 @@ from typing import Any
 import pandas as pd
 from colorama import Back
 from yaml import safe_load
-from rumor_control_group.src.rumor_control_group.flow import RumorControlFlow
+from rumor_control.src.rumor_control_group.flow import RumorControlFlow
 
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
@@ -179,32 +179,33 @@ async def running(
         with open(action_space_file_path, "r", encoding="utf-8") as file: #行为空间
             action_prompt = file.read()
         
-    agent_graph = await gen_control_twitter_agents_with_data( #生成干预用户，返回更新的用户图和id、uid映射
-            twitter_channel=twitter_channel,
-            recsys_type=recsys_type,
-            inference_channel=inference_channel,
-            model_type="glm-4-flash",
-            nurse_agent_id=111,
-        )
+    # agent_graph = await gen_control_twitter_agents_with_data( #生成干预用户，返回更新的用户图和id、uid映射
+    #         twitter_channel=twitter_channel,
+    #         recsys_type=recsys_type,
+    #         inference_channel=inference_channel,
+    #         model_type="glm-4-flash",
+    #         nurse_agent_id=111,
+    #     )
     # print("user id 114514: ",user_id)
-    agent_graph = await generate_agents(
+    agent_graph, anchor_users, anchor_point = await generate_agents(
         agent_info_path=csv_path,
         twitter_channel=twitter_channel,
         inference_channel=inference_channel,
         start_time=start_time,
         recsys_type=recsys_type,
-        agent_graph=agent_graph,
+        # agent_graph=agent_graph,
         action_space_prompt=action_prompt,
         twitter=infra,
         is_openai_model=is_openai_model,
         **model_configs,
         mist_type=mist_type,
+        rumor_control = True,
+        control_rate=0.1,
     )
-    # agent_graph.visualize("initial_social_graph.png")
+    agent_graph.visualize("initial_social_graph.png")
     
     #mist分析
     # await mist_analysis(agent_graph, "mist/mist_B4.csv")
-    
     
     # nurse_agent = agent_graph.get_agent(111)
     # try:
@@ -235,6 +236,8 @@ async def running(
     
 
     # await mist_analysis(agent_graph, "mist/mist_Aft.csv")
+    
+    Rumor_control_flow = RumorControlFlow(anchor_point, anchor_users)
 
     for timestep in range(1, num_timesteps + 1):
         os.environ["SANDBOX_TIME"] = str(timestep * 3)
@@ -256,9 +259,8 @@ async def running(
                     tasks.append(agent.perform_action_by_llm())
             # else:
             #     await agent.perform_action_by_hci() #手动输入行为
-
         await asyncio.gather(*tasks)
-        RumorControlFlow().kickoff(agent_graph)
+        Rumor_control_flow.kickoff(agent_graph)
         # agent_graph.visualize(f"timestep_{timestep}_social_graph.png")
 
     await twitter_channel.write_to_receive_queue((None, None, ActionType.EXIT))

@@ -1,0 +1,23 @@
+[project]
+name = "rumor_control_group"
+version = "0.1.0"
+description = "rumor_control_group using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "crewai[tools]>=0.119.0,<1.0.0"
+]
+
+[project.scripts]
+rumor_control_group = "rumor_control_group.main:run"
+run_crew = "rumor_control_group.main:run"
+train = "rumor_control_group.main:train"
+replay = "rumor_control_group.main:replay"
+test = "rumor_control_group.main:test"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"
