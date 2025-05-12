@@ -55,7 +55,7 @@ class Platform:
         start_time: datetime | None = None,
         show_score: bool = False,
         allow_self_rating: bool = True,
-        recsys_type: str | RecsysType = "reddit",
+        recsys_type: str | RecsysType = "random",
         refresh_rec_post_count: int = 1,
         max_rec_post_len: int = 2,
         following_post_count=3,

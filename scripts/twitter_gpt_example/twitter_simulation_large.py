@@ -112,7 +112,7 @@ async def running(
     csv_path: str | None = DEFAULT_CSV_PATH,
     num_timesteps: int = 3,
     clock_factor: int = 60,
-    recsys_type: str = "twhin-bert",
+    recsys_type: str = "reddit",#"twhin-bert"
     model_configs: dict[str, Any] | None = None,
     inference_configs: dict[str, Any] | None = None,
     actions: dict[str, Any] | None = None,
@@ -202,7 +202,14 @@ async def running(
         rumor_control = True,
         control_rate=0.1,
     )
-    agent_graph.visualize("initial_social_graph.png")
+    
+    selected_nodes = anchor_users  # 设置需要着色的节点索引
+    colors = [
+        'red' if idx in selected_nodes else 'lightgreen'
+        for idx in range(agent_graph.graph.vcount())
+    ]
+    agent_graph.visualize("initial_social_graph.png",vertex_color=colors)
+    print("visualized initial social graph")
     
     #mist分析
     # await mist_analysis(agent_graph, "mist/mist_B4.csv")

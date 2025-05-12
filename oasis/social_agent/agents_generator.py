@@ -36,7 +36,7 @@ async def generate_agents(
     twitter_channel: Channel,
     inference_channel: Channel,
     start_time,
-    recsys_type: str = "twitter",
+    recsys_type: str = "random",
     twitter: Platform = None,
     num_agents: int = 26,
     action_space_prompt: str = None,

@@ -291,7 +291,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                             "graph":self.state.agent_graph,
                             }
                         )
-                args = {"infected_user": sus_user, "refute_text": gen_inoculation_text}
+                args = {"infected_user": sus_user, "refute_text": gen_broadcast_text}
                 result = getattr(anchor_user.env.action,ActionType.CREATE_POST.value)(**args)
                 post_id = result["post_id"]
                 #发动群众点赞评论
@@ -311,16 +311,16 @@ class RumorControlFlow(Flow[RumorInfectionState]):
 #     lead_score_flow.kickoff()
 
 
-def plot():
-    """
-    Plot the flow.
-    """
-    lead_score_flow = RumorControlFlow()
-    lead_score_flow.plot()
+# def plot():
+#     """
+#     Plot the flow.
+#     """
+#     lead_score_flow = RumorControlFlow()
+#     lead_score_flow.plot()
 
 
-if __name__ == "__main__":
-    plot()
+# if __name__ == "__main__":
+#     plot()
 #     kickoff()
 
 

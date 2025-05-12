@@ -1,0 +1,1190 @@
+﻿envs\oasis-crewai\Lib\site-packages\crewai\llm.py
+import json
+import logging
+import os
+import sys
+import threading
+import warnings
+from collections import defaultdict
+from contextlib import contextmanager
+from types import SimpleNamespace # Keep this for potential direct dict-to-object conversion if needed
+from typing import (
+    Any,
+    DefaultDict,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Type,
+    TypedDict,
+    Union,
+    cast,
+)
+import time # Required for GLM response created timestamp and for start/end times
+
+from dotenv import load_dotenv
+from litellm.types.utils import ChatCompletionDeltaToolCall
+from pydantic import BaseModel, Field
+
+from crewai.utilities.events.llm_events import (
+    LLMCallCompletedEvent,
+    LLMCallFailedEvent,
+    LLMCallStartedEvent,
+    LLMCallType,
+    LLMStreamChunkEvent,
+)
+from crewai.utilities.events.tool_usage_events import ToolExecutionErrorEvent
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", UserWarning)
+    import litellm
+    from litellm import Choices, Message # Ensure Message is imported if needed for adaptation
+    from litellm.exceptions import ContextWindowExceededError
+    from litellm.litellm_core_utils.get_supported_openai_params import (
+        get_supported_openai_params,
+    )
+    # Import ModelResponse and Usage from litellm if they are used for constructing responses
+    from litellm.types.utils import ModelResponse as LiteLLMModelResponse # Alias to avoid conflict
+    from litellm.utils import Usage as LiteLLMUsage # Alias to avoid conflict
+    from litellm.utils import supports_response_schema
+
+
+from crewai.llms.base_llm import BaseLLM
+from crewai.utilities.events import crewai_event_bus
+from crewai.utilities.exceptions.context_window_exceeding_exception import (
+    LLMContextLengthExceededException,
+)
+
+# Attempt to import ZhipuAI SDK
+try:
+    from zhipuai import ZhipuAI
+    # from zhipuai.types.chat.chat_completion import ChatCompletion, ChatCompletionMessageToolCall, FunctionCall
+    from zhipuai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDeltaToolCall, ChoiceDelta
+    ZHIPUAI_SDK_AVAILABLE = True
+except ImportError:
+    ZHIPUAI_SDK_AVAILABLE = False
+    logging.warning(
+        "ZhipuAI SDK not found. GLM model calls will fail. Please install with 'pip install zhipuai'"
+    )
+
+
+load_dotenv()
+
+
+class FilteredStream:
+    def __init__(self, original_stream):
+        self._original_stream = original_stream
+        self._lock = threading.Lock()
+
+    def write(self, s) -> int:
+        with self._lock:
+            if (
+                "Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new"
+                in s
+                or "LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()`"
+                in s
+            ):
+                return 0
+            return self._original_stream.write(s)
+
+    def flush(self):
+        with self._lock:
+            return self._original_stream.flush()
+
+
+LLM_CONTEXT_WINDOW_SIZES = {
+    # ... (rest of your LLM_CONTEXT_WINDOW_SIZES) ...
+    "glm-4": 128000,
+    "glm-4-flash": 128000,
+    "glm-4-plus": 128000, # Added from GLM documentation example
+     # ADD OTHER GLM MODELS HERE IF NEEDED including glm-4v if you use it with this logic
+}
+
+DEFAULT_CONTEXT_WINDOW_SIZE = 8192
+CONTEXT_WINDOW_USAGE_RATIO = 0.75
+
+
+@contextmanager
+def suppress_warnings():
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore")
+        warnings.filterwarnings(
+            "ignore", message="open_text is deprecated*", category=DeprecationWarning
+        )
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = FilteredStream(old_stdout)
+        sys.stderr = FilteredStream(old_stderr)
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+
+class Delta(TypedDict):
+    content: Optional[str]
+    role: Optional[str]
+    tool_calls: Optional[List[Any]] # Added for tool call streaming
+
+class StreamingChoices(TypedDict):
+    delta: Delta
+    index: int
+    finish_reason: Optional[str]
+
+
+class FunctionArgs(BaseModel):
+    name: str = ""
+    arguments: str = ""
+
+
+class AccumulatedToolArgs(BaseModel):
+    function: FunctionArgs = Field(default_factory=FunctionArgs)
+
+
+class LLM(BaseLLM):
+    def __init__(
+        self,
+        model: str,
+        timeout: Optional[Union[float, int]] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        n: Optional[int] = None,
+        stop: Optional[Union[str, List[str]]] = None,
+        max_completion_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        logit_bias: Optional[Dict[int, float]] = None,
+        response_format: Optional[Type[BaseModel]] = None, # For LiteLLM
+        # GLM response_format is {"type": "json_object"} or {"type": "text"}
+        seed: Optional[int] = None, # GLM does not explicitly list seed, but it's common.
+        logprobs: Optional[int] = None, # GLM does not explicitly list logprobs
+        top_logprobs: Optional[int] = None, # GLM does not explicitly list top_logprobs
+        base_url: Optional[str] = None, # For LiteLLM. GLM uses fixed https://open.bigmodel.cn
+        api_base: Optional[str] = None, # Alias for base_url
+        api_version: Optional[str] = None, # For LiteLLM. GLM uses v4
+        api_key: Optional[str] = None,
+        callbacks: List[Any] = [],
+        reasoning_effort: Optional[Literal["none", "low", "medium", "high"]] = None, # LiteLLM specific
+        stream: bool = False,
+        **kwargs,
+    ):
+        self.model = model
+        self.timeout = timeout
+        self.temperature = temperature
+        self.top_p = top_p
+        self.n = n # GLM doesn't support n > 1 for completions
+        self.max_completion_tokens = max_completion_tokens
+        self.max_tokens = max_tokens
+        self.presence_penalty = presence_penalty # GLM does not explicitly list
+        self.frequency_penalty = frequency_penalty # GLM does not explicitly list
+        self.logit_bias = logit_bias # GLM does not explicitly list
+        self.response_format = response_format
+        self.seed = seed
+        self.logprobs = logprobs
+        self.top_logprobs = top_logprobs
+        self.base_url = base_url
+        self.api_base = api_base
+        self.api_version = api_version
+        self.api_key = api_key
+        self.callbacks = callbacks
+        self.context_window_size = 0
+        self.reasoning_effort = reasoning_effort
+        self.additional_params = kwargs # Store other params like request_id, user_id for GLM
+        self.is_anthropic = self._is_anthropic_model(model)
+        self.stream = stream
+
+        litellm.drop_params = True # This is a litellm global config
+
+        if stop is None:
+            self.stop: List[str] = []
+        elif isinstance(stop, str):
+            self.stop = [stop]
+        else:
+            self.stop = stop
+
+        self.set_callbacks(callbacks)
+        self.set_env_callbacks()
+
+        if self._is_glm_model(self.model) and not ZHIPUAI_SDK_AVAILABLE:
+            raise ImportError("ZhipuAI SDK is not installed. Please install it with 'pip install zhipuai' to use GLM models.")
+        
+        self.glm_client = None
+
+
+    def _is_anthropic_model(self, model: str) -> bool:
+        ANTHROPIC_PREFIXES = ("anthropic/", "claude-", "claude/")
+        return any(prefix in model.lower() for prefix in ANTHROPIC_PREFIXES)
+
+    def _is_glm_model(self, model_name: Optional[str]) -> bool:
+        if model_name:
+            return model_name.lower().startswith("glm")
+        return False
+
+    def _get_glm_client(self, api_key_from_params: Optional[str]) -> ZhipuAI:
+        resolved_api_key = api_key_from_params or os.getenv("ZHIPUAI_API_KEY")
+        if not resolved_api_key:
+            raise ValueError("ZhipuAI API key not found. Set ZHIPUAI_API_KEY environment variable or pass via api_key parameter.")
+        # ZhipuAI SDK's create method has a timeout parameter.
+        # If a client-level timeout is desired and supported, it could be added here.
+        # For now, timeout is handled at the request level in _adapt_params_for_glm.
+        return ZhipuAI(api_key=resolved_api_key)
+
+
+    def _adapt_params_for_glm(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        glm_params = {
+            "model": params.get("model"),
+            "messages": params.get("messages"),
+        }
+        
+        # Timeout for ZhipuAI SDK's create method
+        # The 'timeout' in crewai's params is for the overall request.
+        # ZhipuAI SDK's .create() also has a 'timeout' param.
+        if params.get("timeout") is not None:
+            glm_params["timeout"] = params.get("timeout")
+
+
+        if "temperature" in params:
+            glm_params["temperature"] = params["temperature"]
+            if params["temperature"] == 0.0:
+                 glm_params["do_sample"] = False
+            elif params.get("do_sample") is not None:
+                 glm_params["do_sample"] = params["do_sample"]
+            else:
+                 glm_params["do_sample"] = True
+        else:
+            glm_params["temperature"] = 0.75 
+            glm_params["do_sample"] = True
+
+
+        if "top_p" in params:
+            glm_params["top_p"] = params["top_p"]
+        
+        if params.get("max_tokens"):
+            glm_params["max_tokens"] = params["max_tokens"]
+        elif self.max_completion_tokens :
+            glm_params["max_tokens"] = self.max_completion_tokens
+
+
+        if params.get("stop"):
+            stop_val = params["stop"]
+            if isinstance(stop_val, str):
+                glm_params["stop"] = [stop_val]
+            elif isinstance(stop_val, list) and len(stop_val) > 0:
+                glm_params["stop"] = [stop_val[0]] 
+                if len(stop_val) > 1:
+                    logging.warning("GLM currently supports only a single stop word. Using the first one.")
+        
+        if params.get("tools"):
+            glm_params["tools"] = params["tools"]
+            if isinstance(params.get("tool_choice"), str):
+                 glm_params["tool_choice"] = params.get("tool_choice")
+
+
+        # GLM's response_format is a dict like {"type": "json_object"}
+        # CrewAI's self.response_format could be a Pydantic model type or the dict.
+        if isinstance(params.get("response_format"), dict) and "type" in params["response_format"]:
+            glm_params["response_format"] = params["response_format"]
+        elif isinstance(self.response_format, type) and issubclass(self.response_format, BaseModel):
+            # If crewAI user passed a Pydantic model, imply json_object mode for GLM
+            glm_params["response_format"] = {"type": "json_object"}
+        elif isinstance(self.response_format, dict) and "type" in self.response_format:
+            glm_params["response_format"] = self.response_format
+
+
+        if "request_id" in self.additional_params:
+            glm_params["request_id"] = self.additional_params["request_id"]
+        if "user_id" in self.additional_params: 
+            glm_params["user_id"] = self.additional_params["user_id"]
+        elif "user" in params: 
+             glm_params["user_id"] = params["user"]
+
+        if "do_sample" in self.additional_params and "do_sample" not in glm_params:
+             glm_params["do_sample"] = self.additional_params["do_sample"]
+
+        return {k: v for k, v in glm_params.items() if v is not None}
+
+    def _prepare_completion_params(
+        self,
+        messages: Union[str, List[Dict[str, str]]],
+        tools: Optional[List[dict]] = None,
+    ) -> Dict[str, Any]:
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
+        
+        if not self._is_glm_model(self.model):
+            formatted_messages = self._format_messages_for_provider(messages)
+        else:
+            formatted_messages = []
+            for msg in messages:
+                if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+                    if not (msg.get("role") == "assistant" and msg.get("tool_calls")):
+                        if not (msg.get("role") == "tool" and msg.get("tool_call_id") and "content" in msg):
+                            raise TypeError(
+                                f"Invalid message format for GLM: {msg}. "
+                                "Each message must be a dict with 'role' and 'content' (or 'tool_calls' for assistant, "
+                                "or 'tool_call_id' and 'content' for tool)."
+                            )
+                formatted_messages.append(msg)
+
+        params = {
+            "model": self.model,
+            "messages": formatted_messages, 
+            "timeout": self.timeout, 
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "stop": self.stop,
+            "max_tokens": self.max_tokens or self.max_completion_tokens,
+            "response_format": self.response_format, 
+            "api_key": self.api_key,
+            "stream": self.stream,
+            "tools": tools,
+            **self.additional_params, 
+        }
+        if self.additional_params.get("tool_choice"):
+            params["tool_choice"] = self.additional_params.get("tool_choice")
+
+        # For non-GLM, LiteLLM specific params
+        if not self._is_glm_model(self.model):
+            params.update({
+                "n": self.n,
+                "presence_penalty": self.presence_penalty,
+                "frequency_penalty": self.frequency_penalty,
+                "logit_bias": self.logit_bias,
+                "seed": self.seed,
+                "logprobs": self.logprobs,
+                "top_logprobs": self.top_logprobs,
+                "api_base": self.api_base, 
+                "base_url": self.base_url, 
+                "api_version": self.api_version,
+                "reasoning_effort": self.reasoning_effort,
+            })
+
+        return {k: v for k, v in params.items() if v is not None}
+
+
+    def _handle_glm_streaming_response(
+        self,
+        params: Dict[str, Any],
+        callbacks: Optional[List[Any]] = None,
+        available_functions: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        logging.debug(f"Using direct GLM streaming for model: {params.get('model')}")
+        glm_client = self._get_glm_client(params.get('api_key'))
+        adapted_glm_params = self._adapt_params_for_glm(params)
+        adapted_glm_params["stream"] = True
+
+        full_response_content = ""
+        accumulated_tool_args: DefaultDict[int, AccumulatedToolArgs] = defaultdict(AccumulatedToolArgs)
+        
+        glm_usage_info = None
+        last_glm_chunk_adapted = None
+        processed_tool_call_ids = set()
+        
+        start_time = time.time() # Record start time for callbacks
+
+        try:
+            response_stream = glm_client.chat.completions.create(**adapted_glm_params)
+
+            for glm_chunk in response_stream:
+                chunk_id = glm_chunk.id
+                created_timestamp = glm_chunk.created
+
+                adapted_choices = []
+                current_chunk_content = None 
+
+                if glm_chunk.choices:
+                    glm_choice = glm_chunk.choices[0] 
+                    
+                    delta_dict: Dict[str, Any] = {"role": glm_choice.delta.role or "assistant"}
+                    
+                    if glm_choice.delta.content:
+                        delta_dict["content"] = glm_choice.delta.content
+                        current_chunk_content = glm_choice.delta.content
+                        full_response_content += glm_choice.delta.content
+
+                    if glm_choice.delta.tool_calls:
+                        adapted_tool_calls_delta = []
+                        for tc_delta in glm_choice.delta.tool_calls:
+                            adapted_tool_calls_delta.append({
+                                "index": tc_delta.index, 
+                                "id": tc_delta.id,
+                                "type": tc_delta.type, 
+                                "function": {
+                                    "name": tc_delta.function.name if tc_delta.function else None,
+                                    "arguments": tc_delta.function.arguments if tc_delta.function else None,
+                                }
+                            })
+                            if tc_delta.id and tc_delta.id not in processed_tool_call_ids : 
+                                pseudo_litellm_tool_call = ChatCompletionDeltaToolCall(
+                                    index=tc_delta.index or 0, 
+                                    id=tc_delta.id,
+                                    function=FunctionArgs(
+                                        name=tc_delta.function.name or "",
+                                        arguments=tc_delta.function.arguments or ""
+                                    ),
+                                    type=tc_delta.type or "function"
+                                )
+                                tool_call_result = self._handle_streaming_tool_calls(
+                                     tool_calls=[pseudo_litellm_tool_call],
+                                     accumulated_tool_args=accumulated_tool_args,
+                                     available_functions=available_functions
+                                )
+                                if tool_call_result is not None: 
+                                    current_chunk_content = tool_call_result 
+                                    full_response_content = tool_call_result 
+                                    if tc_delta.id : processed_tool_call_ids.add(tc_delta.id)
+                        if adapted_tool_calls_delta:
+                             delta_dict["tool_calls"] = adapted_tool_calls_delta
+                    adapted_choices.append({
+                        "delta": delta_dict,
+                        "index": glm_choice.index,
+                        "finish_reason": glm_choice.finish_reason
+                    })
+
+                last_glm_chunk_adapted = {
+                    "id": chunk_id,
+                    "model": params.get("model"), 
+                    "created": created_timestamp,
+                    "choices": adapted_choices,
+                    "usage": None 
+                }
+
+                if glm_chunk.usage:
+                    glm_usage_info = {
+                        "prompt_tokens": glm_chunk.usage.prompt_tokens,
+                        "completion_tokens": glm_chunk.usage.completion_tokens,
+                        "total_tokens": glm_chunk.usage.total_tokens,
+                    }
+                    last_glm_chunk_adapted["usage"] = glm_usage_info
+
+                if current_chunk_content: 
+                    crewai_event_bus.emit(self, event=LLMStreamChunkEvent(chunk=current_chunk_content))
+                
+                if glm_chunk.choices and glm_chunk.choices[0].finish_reason == "tool_calls":
+                    final_tool_calls = []
+                    for acc_tool_arg_key in accumulated_tool_args:
+                        acc_tool = accumulated_tool_args[acc_tool_arg_key]
+                        final_tool_calls.append(SimpleNamespace(
+                            function=SimpleNamespace(
+                                name=acc_tool.function.name,
+                                arguments=acc_tool.function.arguments
+                            )
+                        ))
+                    
+                    if final_tool_calls and available_functions:
+                        tool_result = self._handle_tool_call(final_tool_calls, available_functions)
+                        if tool_result is not None:
+                            end_time = time.time() # Record end time
+                            if callbacks and glm_usage_info: self._handle_streaming_callbacks(callbacks, glm_usage_info, last_glm_chunk_adapted) # Callbacks before returning
+                            # _handle_tool_call already emits TOOL_CALL event
+                            return tool_result
+
+            end_time = time.time() # Record end time if loop finishes
+
+            if not full_response_content and accumulated_tool_args:
+                final_tool_calls = []
+                for acc_tool_arg_key in accumulated_tool_args:
+                    # ... (logic as before)
+                    acc_tool = accumulated_tool_args[acc_tool_arg_key]
+                    try:
+                        json.loads(acc_tool.function.arguments)
+                        final_tool_calls.append(SimpleNamespace(
+                            function=SimpleNamespace(
+                                name=acc_tool.function.name,
+                                arguments=acc_tool.function.arguments
+                            )
+                        ))
+                    except json.JSONDecodeError:
+                        logging.warning(f"Skipping tool call {acc_tool.function.name} due to invalid JSON arguments during final processing.")
+                        continue
+
+                if final_tool_calls and available_functions:
+                    tool_result = self._handle_tool_call(final_tool_calls, available_functions)
+                    if tool_result is not None:
+                        if callbacks and glm_usage_info: self._handle_streaming_callbacks(callbacks, glm_usage_info, last_glm_chunk_adapted)
+                        # _handle_tool_call already emits TOOL_CALL event
+                        return tool_result
+
+            if callbacks and glm_usage_info:
+                self._handle_streaming_callbacks(callbacks, glm_usage_info, last_glm_chunk_adapted) # Pass original last_glm_chunk_adapted
+            
+            if not full_response_content and not accumulated_tool_args:
+                 raise Exception("GLM direct streaming returned no content and no tool calls.")
+
+            self._handle_emit_call_events(full_response_content, LLMCallType.LLM_CALL)
+            return full_response_content
+
+        except Exception as e:
+            end_time = time.time() # Record end time even on error for potential callbacks
+            logging.error(f"Error in GLM direct streaming: {str(e)}")
+            # If callbacks are present, attempt to call failure callbacks
+            if callbacks:
+                for callback in callbacks:
+                    if hasattr(callback, "log_failure_event"):
+                        try:
+                            callback.log_failure_event(
+                                kwargs=params,
+                                original_exception=e,
+                                start_time=start_time, # Pass recorded start_time
+                                end_time=end_time    # Pass recorded end_time
+                            )
+                        except Exception as cb_exc:
+                            logging.error(f"Error in GLM streaming failure callback: {cb_exc}")
+            
+            crewai_event_bus.emit(self, event=LLMCallFailedEvent(error=str(e)))
+            raise Exception(f"Failed to get GLM direct streaming response: {str(e)}")
+
+
+    def _handle_glm_non_streaming_response(
+        self,
+        params: Dict[str, Any],
+        callbacks: Optional[List[Any]] = None,
+        available_functions: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        logging.debug(f"Using direct GLM non-streaming for model: {params.get('model')}")
+        glm_client = self._get_glm_client(params.get('api_key'))
+        adapted_glm_params = self._adapt_params_for_glm(params)
+        adapted_glm_params["stream"] = False
+
+        start_time = time.time() # Record start time for callbacks
+
+        try:
+            glm_response= glm_client.chat.completions.create(**adapted_glm_params)
+            end_time = time.time() # Record end time
+
+            text_response = ""
+            response_tool_calls_adapted = None
+
+            if glm_response.choices:
+                glm_message = glm_response.choices[0].message
+                text_response = glm_message.content or "" 
+
+                if glm_message.tool_calls:
+                    response_tool_calls_adapted = []
+                    for tc in glm_message.tool_calls:
+                        response_tool_calls_adapted.append(
+                            SimpleNamespace( 
+                                id=tc.id,
+                                type=tc.type, 
+                                function=SimpleNamespace(
+                                    name=tc.function.name,
+                                    arguments=tc.function.arguments
+                                )
+                            )
+                        )
+            
+            glm_usage_data = None
+            if glm_response.usage:
+                glm_usage_data = {
+                    "prompt_tokens": glm_response.usage.prompt_tokens,
+                    "completion_tokens": glm_response.usage.completion_tokens,
+                    "total_tokens": glm_response.usage.total_tokens,
+                }
+
+            if callbacks and len(callbacks) > 0 and glm_usage_data:
+                for callback in callbacks:
+                    if hasattr(callback, "log_success_event"):
+                        # Construct a LiteLLM-like response object for the callback
+                        # Ensure all required fields for the callback are present.
+                        callback_response_obj = LiteLLMModelResponse(
+                            id=glm_response.id,
+                            choices=[ 
+                                Choices(
+                                    finish_reason=glm_response.choices[0].finish_reason if glm_response.choices else "stop",
+                                    index=0,
+                                    message=Message( # Using litellm.Message
+                                        content=text_response,
+                                        role="assistant",
+                                        tool_calls=response_tool_calls_adapted 
+                                    )
+                                )
+                            ],
+                            created=glm_response.created or int(time.time()),
+                            model=glm_response.model or params.get("model",""),
+                            usage=LiteLLMUsage(**glm_usage_data) if glm_usage_data else LiteLLMUsage(), # Using litellm.Usage
+                            _hidden_params = {"custom_llm_provider": "glm_direct"} 
+                        )
+                        try:
+                            callback.log_success_event(
+                                kwargs=params, 
+                                response_obj=callback_response_obj, 
+                                start_time=start_time, # Pass recorded start_time
+                                end_time=end_time    # Pass recorded end_time
+                            )
+                        except Exception as cb_exc:
+                             logging.error(f"Error in GLM non-streaming success callback: {cb_exc}")
+            
+            if response_tool_calls_adapted and available_functions:
+                tool_result = self._handle_tool_call(response_tool_calls_adapted, available_functions)
+                if tool_result is not None:
+                    # _handle_tool_call already emits TOOL_CALL event
+                    return tool_result # tool_result is already str
+            
+            self._handle_emit_call_events(text_response, LLMCallType.LLM_CALL)
+            return text_response
+
+        except Exception as e:
+            end_time = time.time() # Record end time even on error
+            logging.error(f"Error in GLM direct non-streaming: {str(e)}")
+            # If callbacks are present, attempt to call failure callbacks
+            if callbacks:
+                for callback in callbacks:
+                    if hasattr(callback, "log_failure_event"):
+                        try:
+                            callback.log_failure_event(
+                                kwargs=params,
+                                original_exception=e,
+                                start_time=start_time, # Pass recorded start_time
+                                end_time=end_time    # Pass recorded end_time
+                            )
+                        except Exception as cb_exc:
+                            logging.error(f"Error in GLM non-streaming failure callback: {cb_exc}")
+
+            crewai_event_bus.emit(self,event=LLMCallFailedEvent(error=str(e)))
+            raise Exception(f"Failed to get GLM direct non-streaming response: {str(e)}")
+
+
+    def _handle_streaming_response(
+        self,
+        params: Dict[str, Any],
+        callbacks: Optional[List[Any]] = None,
+        available_functions: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        model_name = params.get("model")
+        if self._is_glm_model(model_name):
+            if not ZHIPUAI_SDK_AVAILABLE:
+                raise ImportError("ZhipuAI SDK is not available. Cannot call GLM models.")
+            return self._handle_glm_streaming_response(params, callbacks, available_functions)
+
+        # --- Existing LiteLLM path ---
+        full_response = ""
+        last_chunk = None
+        chunk_count = 0
+        usage_info = None
+        llm_tool_calls = None 
+
+        accumulated_tool_args: DefaultDict[int, AccumulatedToolArgs] = defaultdict(
+            AccumulatedToolArgs
+        )
+        params["stream"] = True
+        params["stream_options"] = {"include_usage": True}
+        
+        start_time_litellm = time.time() # For LiteLLM path callbacks
+
+        try:
+            for chunk in litellm.completion(**params): 
+                chunk_count += 1
+                last_chunk = chunk
+                chunk_content = None
+                try:
+                    choices = None
+                    if isinstance(chunk, dict) and "choices" in chunk: choices = chunk["choices"]
+                    elif hasattr(chunk, "choices") and not isinstance(getattr(chunk, "choices"), type): choices = getattr(chunk, "choices")
+
+                    if isinstance(chunk, dict) and "usage" in chunk: usage_info = chunk["usage"]
+                    elif hasattr(chunk, "usage") and not isinstance(getattr(chunk, "usage"), type): usage_info = getattr(chunk, "usage")
+
+                    if choices and len(choices) > 0:
+                        choice = choices[0]
+                        delta = None
+                        if isinstance(choice, dict) and "delta" in choice: delta = choice["delta"]
+                        elif hasattr(choice, "delta"): delta = getattr(choice, "delta")
+
+                        if delta:
+                            if isinstance(delta, dict):
+                                if "content" in delta and delta["content"] is not None: chunk_content = delta["content"]
+                            elif hasattr(delta, "content"): chunk_content = getattr(delta, "content")
+                            if chunk_content is None and isinstance(delta, dict): chunk_content = ""
+                            
+                            if "tool_calls" in delta and delta["tool_calls"] is not None: 
+                                llm_tool_calls = delta["tool_calls"] 
+                                if llm_tool_calls: 
+                                    result = self._handle_streaming_tool_calls(
+                                        tool_calls=llm_tool_calls, 
+                                        accumulated_tool_args=accumulated_tool_args,
+                                        available_functions=available_functions,
+                                    )
+                                    if result is not None: chunk_content = result
+                except Exception as e:
+                    logging.debug(f"Error extracting content from litellm chunk: {e}")
+                    logging.debug(f"Chunk format: {type(chunk)}, content: {chunk}")
+
+                if chunk_content is not None:
+                    full_response += chunk_content
+                    assert hasattr(crewai_event_bus, "emit")
+                    crewai_event_bus.emit(self, event=LLMStreamChunkEvent(chunk=chunk_content))
+            
+            end_time_litellm = time.time() # For LiteLLM path callbacks
+
+            if not full_response.strip() and chunk_count == 0:
+                logging.warning("No chunks received in litellm streaming response, falling back to non-streaming")
+                non_streaming_params = params.copy()
+                non_streaming_params["stream"] = False
+                non_streaming_params.pop("stream_options", None)
+                return self._handle_non_streaming_response(non_streaming_params, callbacks, available_functions)
+
+            # ... (rest of the original litellm streaming logic for empty/final tool calls) ...
+            if not full_response.strip() and chunk_count > 0:
+                logging.warning(f"Received {chunk_count} litellm chunks but no content was extracted")
+                if last_chunk is not None:
+                    # ... (logic to extract from last_chunk message - unchanged)
+                    try:
+                        choices = None
+                        if isinstance(last_chunk, dict) and "choices" in last_chunk: choices = last_chunk["choices"]
+                        elif hasattr(last_chunk, "choices") and not isinstance(getattr(last_chunk, "choices"), type): choices = getattr(last_chunk, "choices")
+                        if choices and len(choices) > 0:
+                            choice = choices[0]
+                            message = None
+                            if isinstance(choice, dict) and "message" in choice: message = choice["message"]
+                            elif hasattr(choice, "message"): message = getattr(choice, "message")
+                            if message:
+                                content = None
+                                if isinstance(message, dict) and "content" in message: content = message["content"]
+                                elif hasattr(message, "content"): content = getattr(message, "content")
+                                if content:
+                                    full_response = content
+                                    logging.info(f"Extracted content from last litellm chunk message: {full_response}")
+                    except Exception as e:
+                        logging.debug(f"Error extracting content from last litellm chunk: {e}")
+
+
+            if not full_response.strip() and len(accumulated_tool_args) == 0 :
+                 raise Exception("No content received from litellm streaming response and no tools.")
+
+            final_litellm_tool_calls = None 
+            try:
+                if last_chunk:
+                    # ... (logic to get final_litellm_tool_calls from last_chunk - unchanged)
+                    choices = None
+                    if isinstance(last_chunk, dict) and "choices" in last_chunk: choices = last_chunk["choices"]
+                    elif hasattr(last_chunk, "choices") and not isinstance(getattr(last_chunk, "choices"), type): choices = getattr(last_chunk, "choices")
+                    if choices and len(choices) > 0:
+                        choice = choices[0]
+                        message = None
+                        if isinstance(choice, dict) and "message" in choice: message = choice["message"]
+                        elif hasattr(choice, "message"): message = getattr(choice, "message")
+                        if message:
+                            if isinstance(message, dict) and "tool_calls" in message: final_litellm_tool_calls = message["tool_calls"]
+                            elif hasattr(message, "tool_calls"): final_litellm_tool_calls = getattr(message, "tool_calls")
+            except Exception as e: logging.debug(f"Error checking for final tool calls from litellm: {e}")
+
+            if not final_litellm_tool_calls and accumulated_tool_args: 
+                processed_any_tool = False
+                for acc_tool_key in list(accumulated_tool_args.keys()): 
+                    # ... (logic as before)
+                    tool_data = accumulated_tool_args[acc_tool_key]
+                    try:
+                        json.loads(tool_data.function.arguments)
+                        pseudo_tool_call_obj = [SimpleNamespace(
+                            function=SimpleNamespace(
+                                name=tool_data.function.name,
+                                arguments=tool_data.function.arguments
+                            )
+                        )]
+                        tool_result = self._handle_tool_call(pseudo_tool_call_obj, available_functions)
+                        if tool_result is not None:
+                            # For LiteLLM path, _handle_streaming_callbacks takes last_chunk directly
+                            if callbacks: self._handle_streaming_callbacks(callbacks, usage_info, last_chunk) 
+                            return tool_result 
+                        processed_any_tool = True 
+                    except json.JSONDecodeError:
+                        logging.warning(f"Tool {tool_data.function.name} final arguments were not valid JSON: {tool_data.function.arguments}")
+                    except Exception as e:
+                        logging.error(f"Error processing accumulated tool {tool_data.function.name}: {e}")
+            
+            if not final_litellm_tool_calls and not accumulated_tool_args: 
+                if callbacks: self._handle_streaming_callbacks(callbacks, usage_info, last_chunk)
+                self._handle_emit_call_events(full_response, LLMCallType.LLM_CALL)
+                return full_response
+
+            if final_litellm_tool_calls and available_functions:
+                tool_result = self._handle_tool_call(final_litellm_tool_calls, available_functions)
+                if tool_result is not None:
+                    return tool_result
+
+            if callbacks: self._handle_streaming_callbacks(callbacks, usage_info, last_chunk) # Pass original last_chunk
+            self._handle_emit_call_events(full_response, LLMCallType.LLM_CALL)
+            return full_response
+
+        except ContextWindowExceededError as e:
+            raise LLMContextLengthExceededException(str(e))
+        except Exception as e:
+            end_time_litellm = time.time() # For LiteLLM path callbacks
+            logging.error(f"Error in litellm streaming response: {str(e)}")
+            # LiteLLM Callbacks for failure
+            if callbacks:
+                for callback in callbacks:
+                    if hasattr(callback, "log_failure_event"):
+                        try:
+                            callback.log_failure_event(
+                                kwargs=params,
+                                original_exception=e,
+                                start_time=start_time_litellm,
+                                end_time=end_time_litellm
+                            )
+                        except Exception as cb_exc:
+                            logging.error(f"Error in LiteLLM streaming failure callback: {cb_exc}")
+
+            if full_response.strip():
+                logging.warning(f"Returning partial litellm response despite error: {str(e)}")
+                self._handle_emit_call_events(full_response, LLMCallType.LLM_CALL)
+                return full_response
+            assert hasattr(crewai_event_bus, "emit")
+            crewai_event_bus.emit(self, event=LLMCallFailedEvent(error=str(e)))
+            raise Exception(f"Failed to get litellm streaming response: {str(e)}")
+
+
+    def _handle_non_streaming_response(
+        self,
+        params: Dict[str, Any],
+        callbacks: Optional[List[Any]] = None,
+        available_functions: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        model_name = params.get("model")
+        if self._is_glm_model(model_name):
+            if not ZHIPUAI_SDK_AVAILABLE:
+                raise ImportError("ZhipuAI SDK is not available. Cannot call GLM models.")
+            return self._handle_glm_non_streaming_response(params, callbacks, available_functions)
+
+        # --- Existing LiteLLM path ---
+        start_time_litellm = time.time() # For LiteLLM path callbacks
+        try:
+            response = litellm.completion(**params) 
+            end_time_litellm = time.time() # For LiteLLM path callbacks
+        except ContextWindowExceededError as e:
+            raise LLMContextLengthExceededException(str(e))
+        except Exception as e: # Catch other litellm.completion errors
+            end_time_litellm = time.time()
+            logging.error(f"Error in litellm non-streaming call: {str(e)}")
+            if callbacks:
+                for callback in callbacks:
+                    if hasattr(callback, "log_failure_event"):
+                        try:
+                            callback.log_failure_event(
+                                kwargs=params, 
+                                original_exception=e,
+                                start_time=start_time_litellm,
+                                end_time=end_time_litellm
+                            )
+                        except Exception as cb_exc:
+                            logging.error(f"Error in LiteLLM non-streaming failure callback: {cb_exc}")
+            raise # Re-raise the original exception from litellm
+        
+        response_message = cast(Choices, cast(LiteLLMModelResponse, response).choices[0]).message
+        text_response = response_message.content or ""
+
+        if callbacks and len(callbacks) > 0:
+            for callback in callbacks:
+                if hasattr(callback, "log_success_event"):
+                    try:
+                        callback.log_success_event(
+                            kwargs=params,
+                            response_obj=response, 
+                            start_time=start_time_litellm, 
+                            end_time=end_time_litellm    
+                        )
+                    except Exception as cb_exc:
+                        logging.error(f"Error in LiteLLM non-streaming success callback: {cb_exc}")
+        
+        tool_calls = getattr(response_message, "tool_calls", [])
+
+        if not tool_calls or not available_functions:
+            self._handle_emit_call_events(text_response, LLMCallType.LLM_CALL)
+            return text_response
+
+        tool_result = self._handle_tool_call(tool_calls, available_functions) 
+        if tool_result is not None:
+            return tool_result
+            
+        self._handle_emit_call_events(text_response, LLMCallType.LLM_CALL)
+        return text_response
+
+
+    def _handle_streaming_tool_calls(
+        self,
+        tool_calls: List[ChatCompletionDeltaToolCall], 
+        accumulated_tool_args: DefaultDict[int, AccumulatedToolArgs],
+        available_functions: Optional[Dict[str, Any]] = None,
+    ) -> None | str:
+        for tool_call in tool_calls:
+            if not hasattr(tool_call, 'function') or not hasattr(tool_call, 'index'):
+                logging.warning(f"Skipping malformed tool_call in stream: {tool_call}")
+                continue
+
+            current_tool_accumulator = accumulated_tool_args[tool_call.index]
+
+            if tool_call.function.name:
+                current_tool_accumulator.function.name = tool_call.function.name
+
+            if tool_call.function.arguments:
+                current_tool_accumulator.function.arguments += (
+                    tool_call.function.arguments
+                )
+            
+            try:
+                tool_call_dict = tool_call.to_dict() if hasattr(tool_call, 'to_dict') else vars(tool_call)
+            except: 
+                tool_call_dict = {
+                    "id": getattr(tool_call, 'id', None),
+                    "type": getattr(tool_call, 'type', 'function'),
+                    "index": getattr(tool_call, 'index', 0),
+                    "function": {
+                        "name": getattr(tool_call.function, 'name', ''),
+                        "arguments": getattr(tool_call.function, 'arguments', '')
+                    }
+                }
+
+            assert hasattr(crewai_event_bus, "emit")
+            crewai_event_bus.emit(
+                self,
+                event=LLMStreamChunkEvent(
+                    tool_call=tool_call_dict,
+                    chunk=tool_call.function.arguments,
+                ),
+            )
+
+            if (
+                current_tool_accumulator.function.name
+                and current_tool_accumulator.function.arguments
+                and available_functions
+            ):
+                try:
+                    json.loads(current_tool_accumulator.function.arguments)
+                    pseudo_tool_call_obj = [SimpleNamespace(
+                        function=SimpleNamespace(
+                            name=current_tool_accumulator.function.name,
+                            arguments=current_tool_accumulator.function.arguments
+                        )
+                    )]
+                    return self._handle_tool_call(
+                        pseudo_tool_call_obj, 
+                        available_functions,
+                    )
+                except json.JSONDecodeError:
+                    continue
+                except Exception as e:
+                    logging.error(f"Error processing streaming tool call '{current_tool_accumulator.function.name}': {e}")
+        return None
+
+    def _handle_tool_call(
+        self,
+        tool_calls: List[Any], 
+        available_functions: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        if not tool_calls or not available_functions:
+            return None
+
+        tool_call = tool_calls[0] 
+
+        if not hasattr(tool_call, 'function') or \
+           not hasattr(tool_call.function, 'name') or \
+           not hasattr(tool_call.function, 'arguments'):
+            logging.error(f"Malformed tool_call object received: {tool_call}")
+            crewai_event_bus.emit(self, event=LLMCallFailedEvent(error="Malformed tool_call object"))
+            return None 
+
+        function_name = tool_call.function.name
+        
+        if function_name in available_functions:
+            try:
+                function_args_str = tool_call.function.arguments
+                if not isinstance(function_args_str, str):
+                    logging.error(f"Tool call arguments for {function_name} are not a string: {function_args_str}")
+                    raise TypeError("Tool call arguments must be a string.")
+                
+                function_args = json.loads(function_args_str)
+                fn_to_call = available_functions[function_name]
+                
+                logging.debug(f"Executing tool: {function_name} with args: {function_args}")
+                result = fn_to_call(**function_args)
+
+                self._handle_emit_call_events(str(result), LLMCallType.TOOL_CALL) 
+                return str(result) 
+            except json.JSONDecodeError as e:
+                logging.error(f"JSONDecodeError for tool '{function_name}' arguments: {tool_call.function.arguments}. Error: {e}")
+                crewai_event_bus.emit(self, event=ToolExecutionErrorEvent(tool_name=function_name, error=str(e), arguments=tool_call.function.arguments))
+            except Exception as e:
+                logging.error(f"Error executing tool '{function_name}': {e}")
+                args_for_event = tool_call.function.arguments if hasattr(tool_call.function, 'arguments') else "{}"
+                crewai_event_bus.emit(self,event=ToolExecutionErrorEvent(tool_name=function_name, error=str(e), arguments=args_for_event))
+        else:
+            logging.warning(f"Tool '{function_name}' not found in available_functions.")
+        return None 
+
+    def call(
+        self,
+        messages: Union[str, List[Dict[str, str]]],
+        tools: Optional[List[dict]] = None,
+        callbacks: Optional[List[Any]] = None,
+        available_functions: Optional[Dict[str, Any]] = None,
+    ) -> Union[str, Any]:
+        assert hasattr(crewai_event_bus, "emit")
+        # Record overall call start time, which could be passed down if needed
+        # call_start_time = time.time() # For example
+        crewai_event_bus.emit(
+            self,
+            event=LLMCallStartedEvent(
+                messages=messages,
+                tools=tools,
+                callbacks=callbacks,
+                available_functions=available_functions,
+            ),
+        )
+        self._validate_call_params()
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
+        
+        if not self._is_glm_model(self.model):
+            if "o1" in self.model.lower(): 
+                for message in messages:
+                    if message.get("role") == "system":
+                        message["role"] = "assistant"
+        
+        with suppress_warnings():
+            if callbacks and len(callbacks) > 0:
+                self.set_callbacks(callbacks)
+            try:
+                params = self._prepare_completion_params(messages, tools)
+                if self.stream:
+                    return self._handle_streaming_response(
+                        params, callbacks, available_functions
+                    )
+                else:
+                    return self._handle_non_streaming_response(
+                        params, callbacks, available_functions
+                    )
+            except LLMContextLengthExceededException:
+                raise
+            except Exception as e:
+                crewai_event_bus.emit(self, event=LLMCallFailedEvent(error=str(e)))
+                logging.error(f"LLM call failed: {str(e)}")
+                raise
+    
+    def _format_messages_for_provider(
+        self, messages: List[Dict[str, str]]
+    ) -> List[Dict[str, str]]:
+        if messages is None: raise TypeError("Messages cannot be None")
+        for msg in messages:
+            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
+                raise TypeError(
+                    "Invalid message format. Each message must be a dict with 'role' and 'content' keys"
+                )
+        if "o1" in self.model.lower():
+            formatted_messages = []
+            for msg in messages:
+                if msg["role"] == "system": formatted_messages.append({"role": "assistant", "content": msg["content"]})
+                else: formatted_messages.append(msg)
+            return formatted_messages
+        if "mistral" in self.model.lower():
+            if messages and messages[-1]["role"] == "assistant":
+                messages = messages.copy()
+                messages.append({"role": "user", "content": "Please continue."})
+            return messages
+        if not self.is_anthropic: return messages
+        if not messages or messages[0]["role"] == "system":
+            return [{"role": "user", "content": "."}, *messages]
+        return messages
+
+    def _get_custom_llm_provider(self) -> Optional[str]:
+        if self._is_glm_model(self.model):
+            return "glm_direct" 
+        if "/" in self.model:
+            return self.model.split("/")[0]
+        return None 
+
+    def _validate_call_params(self) -> None:
+        provider = self._get_custom_llm_provider()
+        if self._is_glm_model(self.model):
+            if self.response_format: 
+                is_glm_json_format = isinstance(self.response_format, dict) and \
+                                     self.response_format.get("type") == "json_object"
+                is_pydantic_model = isinstance(self.response_format, type) and \
+                                    issubclass(self.response_format, BaseModel)
+                is_glm_text_format = isinstance(self.response_format, dict) and \
+                                     self.response_format.get("type") == "text"
+
+                if not (is_glm_json_format or is_pydantic_model or is_glm_text_format):
+                    logging.warning(
+                        f"GLM direct call with response_format={self.response_format}. "
+                        f"GLM supports {{'type': 'json_object'}} or {{'type': 'text'}}. "
+                        f"If a Pydantic model is provided, it implies 'json_object' mode."
+                    )
+            return 
+
+        if self.response_format is not None and not supports_response_schema(
+            model=self.model, custom_llm_provider=provider
+        ):
+            raise ValueError(
+                f"The model {self.model} does not support response_format for provider '{provider}'. "
+                "Please remove response_format or use a supported model."
+            )
+
+    def supports_function_calling(self) -> bool:
+        if self._is_glm_model(self.model):
+            return True
+        try:
+            provider = self._get_custom_llm_provider()
+            return litellm.utils.supports_function_calling(
+                self.model, custom_llm_provider=provider
+            )
+        except Exception as e:
+            logging.error(f"Failed to check function calling support: {str(e)}")
+            return False
+
+    def get_context_window_size(self) -> int:
+        if self.context_window_size != 0: return self.context_window_size
+        MIN_CONTEXT, MAX_CONTEXT = 1024, 2097152
+        for key, value in LLM_CONTEXT_WINDOW_SIZES.items():
+            if not (MIN_CONTEXT <= value <= MAX_CONTEXT):
+                raise ValueError(f"Context window for {key} must be between {MIN_CONTEXT} and {MAX_CONTEXT}")
+        
+        self.context_window_size = int(DEFAULT_CONTEXT_WINDOW_SIZE * CONTEXT_WINDOW_USAGE_RATIO)
+        best_match_key = None
+        for key in LLM_CONTEXT_WINDOW_SIZES.keys():
+            if self.model.startswith(key):
+                if best_match_key is None or len(key) > len(best_match_key):
+                    best_match_key = key
+        
+        if best_match_key:
+            self.context_window_size = int(LLM_CONTEXT_WINDOW_SIZES[best_match_key] * CONTEXT_WINDOW_USAGE_RATIO)
+        
+        return self.context_window_size
+
+    def set_callbacks(self, callbacks: List[Any]):
+        with suppress_warnings():
+            callback_types = [type(callback) for callback in callbacks]
+            if hasattr(litellm, 'success_callback'):
+                for callback in litellm.success_callback[:]:
+                    if type(callback) in callback_types: litellm.success_callback.remove(callback)
+            if hasattr(litellm, '_async_success_callback'):
+                for callback in litellm._async_success_callback[:]:
+                    if type(callback) in callback_types: litellm._async_success_callback.remove(callback)
+            litellm.callbacks = callbacks
+
+    def set_env_callbacks(self):
+        with suppress_warnings():
+            success_callbacks_str = os.environ.get("LITELLM_SUCCESS_CALLBACKS", "")
+            success_callbacks = [cb.strip() for cb in success_callbacks_str.split(",") if cb.strip()] if success_callbacks_str else []
+            failure_callbacks_str = os.environ.get("LITELLM_FAILURE_CALLBACKS", "")
+            failure_callbacks = [cb.strip() for cb in failure_callbacks_str.split(",") if cb.strip()] if failure_callbacks_str else []
+
+            if hasattr(litellm, 'success_callback'): litellm.success_callback = success_callbacks
+            if hasattr(litellm, 'failure_callback'): litellm.failure_callback = failure_callbacks
+            
+            # Removed the automatic addition of "glm" to litellm.success_callback and litellm.failure_callback
+            # as direct GLM calls should handle their own callbacks or this should be configured explicitly by the user.
+    
+    def _handle_emit_call_events(self, response: Any, call_type: LLMCallType):
+        """Handle the events for the LLM call.
+
+        Args:
+            response (str): The response from the LLM call.
+            call_type (str): The type of call, either "tool_call" or "llm_call".
+        """
+        assert hasattr(crewai_event_bus, "emit")
+        crewai_event_bus.emit(
+            self,
+            event=LLMCallCompletedEvent(response=response, call_type=call_type),
+        )
