@@ -13,17 +13,138 @@ from crewai.flow.flow import Flow, listen, router, start, FlowPersistence
 from crewai.flow.persistence import persist, SQLiteFlowPersistence # Added SQLiteFlowPersistence for default
 from crewai import LLM
 
-from rumor_control.src.rumor_control_group.crews.rumor_identify_crew import RumorIdentifyCrew
-from rumor_control.src.rumor_control_group.crews.susceptibility_test_crew import SusceptibilityTestCrew
-from rumor_control.src.rumor_control_group.crews.recommend_predict_crew import RecommendPredictCrew
-from rumor_control.src.rumor_control_group.crews.rumor_refute_crew import rumor_refute_crew
-from rumor_control.src.rumor_control_group.crews.rumor_inoculation_crew import rumor_inoculation_crew
-from rumor_control.src.rumor_control_group.crews.broadcast_crew import broadcast_crew
+from rumor_control.src.rumor_control_group.crews.rumor_identify_crew.RumorIdentifyCrew import RumorIdentifyCrew
+from rumor_control.src.rumor_control_group.crews.susceptibility_test_crew.SusceptibilityTestCrew import SusceptibilityTestCrew
+from rumor_control.src.rumor_control_group.crews.recommend_predict_crew.RecommendPredictCrew import RecommendPredictCrew
+from rumor_control.src.rumor_control_group.crews.rumor_refute_crew.rumor_refute_crew import rumor_refute_crew
+from rumor_control.src.rumor_control_group.crews.rumor_inoculation_crew.rumor_inoculation_crew import rumor_inoculation_crew
+from rumor_control.src.rumor_control_group.crews.broadcast_crew.broadcast_crew import broadcast_crew
 
 from rumor_control.src.rumor_control_group.data_type.data_types import *
 from rumor_control.src.rumor_control_group.data_type.constants import *
 
+
+from crewai.flow.flow import Flow, listen, or_, router, start
+from pydantic import BaseModel
+
+
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
+
+
+# custom_persistence.py (或者在 my_flow.py 顶部)
+import sqlite3 # Python 内置库
+from datetime import datetime # Python 内置库
+from typing import Any, Optional, Dict
+from pydantic import BaseModel
+
+# 你需要确保这个导入路径对于你的 crewai 版本是正确的
+# 通常它可能是 from crewai.core.flow.persistence.base import FlowPersistence
+# 或者根据你的 crewai 安装结构调整
+from crewai.flow.persistence.base import FlowPersistence
+# 如果找不到 FlowPersistence，检查你的 crewai 版本和文档，
+# 或者尝试继承 SQLiteFlowPersistence 并只修改序列化部分（但这更复杂）
+
+class CustomSQLitePersistence(FlowPersistence):
+    def __init__(self, db_path: str = "custom_flow_states.sqlite"):
+        self.db_path = db_path
+        self.init_db()  # 调用 init_db 来创建表
+
+    def _get_connection(self): # 这是一个辅助方法，保持不变
+        return sqlite3.connect(self.db_path)
+
+    # 重命名 _create_table_if_not_exists 为 init_db
+    # 这个方法现在实现了 FlowPersistence 基类要求的抽象方法
+    def init_db(self):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        # 创建表的 SQL 语句，确保 UNIQUE 约束是 (flow_uuid, method_name)
+        # 以便每个方法的状态都能被独立保存和查询
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS flow_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                flow_uuid TEXT NOT NULL,
+                method_name TEXT NOT NULL,
+                state_data TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(flow_uuid, method_name)
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+    def save_state(self, flow_uuid: str, method_name: str, state_data: Any):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        final_state_dict_for_json = {}
+
+        if isinstance(state_data, BaseModel):
+            if hasattr(state_data, 'model_dump'): # Pydantic V2
+                final_state_dict_for_json = state_data.model_dump(mode='json')
+            elif hasattr(state_data, 'dict'): # Pydantic V1
+                final_state_dict_for_json = state_data.dict()
+            else:
+                conn.close()
+                raise TypeError(
+                    f"Cannot serialize Pydantic model of type {type(state_data)} "
+                    "lacking model_dump or dict method."
+                )
+        elif isinstance(state_data, dict):
+            final_state_dict_for_json = state_data
+        else:
+            conn.close()
+            raise TypeError(
+                f"State data for persistence must be a Pydantic BaseModel or a dict, "
+                f"got {type(state_data)}"
+            )
+
+        try:
+            serialized_state = json.dumps(final_state_dict_for_json)
+        except TypeError as e:
+            conn.close()
+            print(f"DEBUG: Failed to serialize final_state_dict_for_json. Content: {final_state_dict_for_json}") # 调试信息
+            raise TypeError(
+                f"Error serializing the processed state_dict to JSON: {e}. "
+                f"Original state_data type: {type(state_data)}"
+            ) from e
+
+        cursor.execute(
+            "INSERT OR REPLACE INTO flow_states (flow_uuid, method_name, state_data, timestamp) VALUES (?, ?, ?, ?)",
+            (flow_uuid, method_name, serialized_state, datetime.now()),
+        )
+        conn.commit()
+        conn.close()
+        print(f"CustomSQLitePersistence: State for flow '{flow_uuid}', method '{method_name}' saved.")
+
+    def load_state(self, flow_uuid: str, method_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        # crewai 的 load_state 可能需要 method_name 来加载特定方法的状态
+        if method_name:
+            cursor.execute(
+                "SELECT state_data FROM flow_states WHERE flow_uuid = ? AND method_name = ? ORDER BY timestamp DESC LIMIT 1",
+                (flow_uuid, method_name)
+            )
+        else:
+            # 如果不提供 method_name，可以考虑加载与 flow_uuid 相关的最新状态，
+            # 但这可能不符合 crewai 的预期行为。
+            # crewai 的 @persist 装饰器在保存时会记录方法名，加载时也可能需要。
+            # 为了安全起见，如果 method_name 为 None，可以返回 None 或抛出错误，
+            # 或者根据 crewai 的具体期望调整此逻辑。
+            # 这里我们假设如果 method_name 为 None，我们就不加载任何特定方法的状态。
+             cursor.execute(
+                "SELECT state_data FROM flow_states WHERE flow_uuid = ? ORDER BY timestamp DESC LIMIT 1",
+                (flow_uuid,) # 加载与 flow_uuid 关联的最新（不特定于方法）的状态，可能需要调整
+            )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
+        # print(f"CustomSQLitePersistence: load_state for flow '{flow_uuid}' (method: {method_name}) - No state found or method_name required.")
+        return None
+
+
 
 # Use method-level persistence
 class RumorControlFlow(Flow[RumorInfectionState]):
@@ -35,6 +156,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         private_territory: List[int],
         anchor_users: List[int],
         specialized_refute: bool,
+        # agent_graph: AgentGraph,
         persistence: Optional[FlowPersistence] = None, # Optional persistence
         **kwargs: Any # Accept other kwargs for Flow base class
     ):
@@ -67,13 +189,20 @@ class RumorControlFlow(Flow[RumorInfectionState]):
 
         self.llm = LLM(model="glm-4")
 
+        # self._current_agent_graph: Optional[AgentGraph] = agent_graph
+    
+
+    def set_agent_graph(self, agent_graph: AgentGraph):
+        """在流程执行前，替换当前的 agent_graph"""
+        self._current_agent_graph = agent_graph
+
     # --- Flow Methods (Make Async) ---
 
     @start()
-    @persist()
+    @persist(CustomSQLitePersistence(db_path="rumor_flow_data.sqlite"))
     async def detect(self):
-        agent_graph = self.state.agent_graph
-        if agent_graph is None:
+        # agent_graph = self.state.agent_graph
+        if self._current_agent_graph is None:
             print("Error: agent_graph not found in flow state during detect.")
             return
 
@@ -81,7 +210,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         self.state.refute_applyment = set()
         self.state.inoculation_applyment = set()
 
-        anchor_users = agent_graph.get_agents(self.state.anchor_users)
+        anchor_users = self._current_agent_graph.get_agents_by_ids(self.state.anchor_users)
         if not anchor_users:
              print("Warning: No anchor users found in the graph.")
              return
@@ -90,7 +219,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
             anchor_id = anchor_user.agent_id
             print(f"anchor_user_{anchor_id} receive message:")
             # Assuming env.to_text_prompt is synchronous or fast
-            context_data = anchor_user.env.get_posts_list()
+            context_data = await anchor_user.env.get_posts_list()
 
             for post in context_data:
                 if not isinstance(post, dict): # Ensure post is a dict
@@ -103,16 +232,16 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                 post_id = post.get("post_id")
 
                 # --- is_rumor (can remain sync helper or integrate) ---
-                def is_rumor_sync(post_content):
+                def is_rumor_async(post_content):
                     if post_content in [r.content for r in self.state.rumor_sources]:
                         return "old"
                     try:
                          # Ensure input is just the content string
-                         crew_input = {"input": post_content}
+                         crew_input = {"content": post_content}
                          print(f"Running RumorIdentifyCrew with input: {crew_input}")
                          result = RumorIdentifyCrew().crew().kickoff(inputs=crew_input)
                          print(f"RumorIdentifyCrew result: {result}")
-                         if isinstance(result, str) and result.strip().lower() == "yes":
+                         if result.raw.strip().lower() == "yes":
                              return "new"
                          else:
                              return "not_rumor"
@@ -125,7 +254,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                     pass
 
                 # Call the sync helper
-                rumor_status = is_rumor_sync(content)
+                rumor_status = is_rumor_async(content)
                 print(f"Rumor status for post {post_id}: {rumor_status}")
 
                 # Initialize UserState if necessary
@@ -173,7 +302,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                         current_user_state.infected.add(user_id)
 
                         #其所有关注者也感染
-                        g = agent_graph.graph
+                        g = self._current_agent_graph
                         try:
                             # Ensure user_id exists as a vertex
                             user_vertex = g.vs.find(name=str(user_id)) # Assuming node names are strings
@@ -226,24 +355,23 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                 #TODO: 局势分析crew,用于决定broadcastCrew名单
 
 
-    @router(detect)
-    @persist()
-    async def if_triggered(self):
-        for anc in self.state.anchor_users:
-             # Check if anchor exists and is triggered
-             if anc in self.state.inspect_division and self.state.inspect_division[anc].triggered:
-                print("detect finished, ready to select. ")
-                return "activated"
-        print("no rumor detected. ")
-        return "silent"
+    # @router(detect)
+    # @persist(CustomSQLitePersistence(db_path="rumor_flow_data.sqlite"))
+    # async def if_triggered(self):
+    #     for anc in self.state.anchor_users:
+    #          # Check if anchor exists and is triggered
+    #          if anc in self.state.inspect_division and self.state.inspect_division[anc].triggered:
+    #             print("detect finished, ready to select. ")
+    #             return "activated"
+    #     print("no rumor detected. ")
+    #     return "silent"
     
 
-    @listen("activated")
-    @persist()
+    @listen(detect)
+    @persist(CustomSQLitePersistence(db_path="rumor_flow_data.sqlite"))
     async def select(self):
-        agent_graph = self.state.agent_graph # Get graph from state
-        if agent_graph is None:
-             print("Error: agent_graph not available in select state.")
+        if self._current_agent_graph is None:
+             print("Error: agent_graph not available in select state (was not passed to detect).")
              return None, None
 
         newly_infected_tuple = self.state.newly_infected
@@ -268,7 +396,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         ref_apply_result_with_reason = {}
         inoc_apply_result_with_reason = {}
 
-        for anchor_user_obj in self.state.agent_graph.get_agents(self.state.anchor_users):
+        for anchor_user_obj in self._current_agent_graph.get_agents_by_ids(self.state.anchor_users):
             anchor_id = anchor_user_obj.agent_id
 
             # Skip if anchor not triggered or already processed its part
@@ -290,7 +418,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
             print("selecting refute users ...")
             profiles_for_refute = []
             for user_id in users_to_test_ids:
-                agent = self.state.agent_graph.get_agent(user_id)
+                agent = self._current_agent_graph.get_agent(user_id)
                 if agent and hasattr(agent, 'user_info') and hasattr(agent.user_info, 'description'):
                      profiles_for_refute.append({
                         "user_id": user_id,
@@ -332,7 +460,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
 
             # --- Inoculation Selection ---
             print("selecting inoculation users ...")
-            g = agent_graph.graph
+            g = self._current_agent_graph.graph
             susceptible_followers_to_inoculate = set()
 
             # Find followers of the newly infected users (original list + poster)
@@ -351,7 +479,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
 
             profiles_for_inoculation = []
             for user_id in susceptible_followers_to_inoculate:
-                 agent = self.state.agent_graph.get_agent(user_id)
+                 agent = self._current_agent_graph.get_agent(user_id)
                  if agent and hasattr(agent, 'user_info') and hasattr(agent.user_info, 'description'):
                     profiles_for_inoculation.append({
                         "user_id": user_id,
@@ -392,7 +520,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
             candidates_for_cross_domain = []
             candidate_to_anchor_map = {}
 
-            current_anchor_agent = self.state.agent_graph.get_agent(anchor_id)
+            current_anchor_agent = self._current_agent_graph.get_agent(anchor_id)
             if not current_anchor_agent: continue # Skip if anchor agent not found
 
             # Find the rumor source related to the current infection event if possible
@@ -425,7 +553,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
             if candidates_for_cross_domain:
                  receivers_profiles = []
                  for rec_id in candidates_for_cross_domain:
-                     rec_agent = self.state.agent_graph.get_agent(rec_id)
+                     rec_agent = self._current_agent_graph.get_agent(rec_id)
                      if rec_agent and hasattr(rec_agent, 'user_info') and hasattr(rec_agent.user_info, 'description'):
                          receivers_profiles.append({"user_id": rec_id, "user_profile": rec_agent.user_info.description})
                      else:
@@ -433,7 +561,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
 
                  if receivers_profiles:
                     num_cross_domain = max(1, int(0.2 * len(receivers_profiles))) # Predict for at least 1
-                    poster_agent = self.state.agent_graph.get_agent(current_rumor.user_id) # Agent who posted the rumor
+                    poster_agent = self._current_agent_graph.get_agent(current_rumor.user_id) # Agent who posted the rumor
                     poster_profile = poster_agent.user_info.description if poster_agent else "Unknown"
 
                     try:
@@ -488,18 +616,14 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         return ref_apply_result_with_reason, inoc_apply_result_with_reason
 
 
-    @listen("silent")
-    async def silent(self):
-        print("Flow is silent, no rumors detected or triggered.")
-        pass
-
-
     @listen(select)
-    @persist()
-    async def refute(self, ref_apply_result_with_reason, inoc_apply_result_with_reason):
-        agent_graph = self.state.agent_graph # Get graph from state
-        if agent_graph is None:
-             print("Error: agent_graph not available in refute state.")
+    @persist(CustomSQLitePersistence(db_path="rumor_flow_data.sqlite"))
+    async def refute(self, select_output):
+
+        ref_apply_result_with_reason, inoc_apply_result_with_reason = select_output
+
+        if self._current_agent_graph is None:
+             print("Error: agent_graph not available in refute state (was not passed to detect).")
              return
 
         print("Refute/Inoculate phase started...")
@@ -540,7 +664,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         processed_users_for_action = set() # Track users already acted upon this cycle
 
         # Iterate through anchors to perform actions within their territories
-        for anchor_user_obj in self.state.agent_graph.get_agents(self.state.anchor_users):
+        for anchor_user_obj in self._current_agent_graph.get_agents_by_ids(self.state.anchor_users):
              anchor_id = anchor_user_obj.agent_id
              if anchor_id not in self.state.inspect_division or not self.state.inspect_division[anchor_id].triggered:
                  continue # Skip inactive anchors
@@ -568,7 +692,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
              refute_tasks = []
              print(f"Anchor {anchor_id} refuting users: {users_to_refute_in_territory}")
              for infected_user_id in users_to_refute_in_territory:
-                 infected_user_agent = self.state.agent_graph.get_agent(infected_user_id)
+                 infected_user_agent = self._current_agent_graph.get_agent(infected_user_id)
                  if not infected_user_agent: continue
                  if self.sepcialized_refute and infected_user_id in ref_apply_result_with_reason[anchor_id].keys():
                     try:
@@ -603,7 +727,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
              results_refute = await asyncio.gather(*refute_tasks, return_exceptions=True)
              
              for infected_user_id in users_to_refute_in_territory:
-                 infected_user_agent = self.state.agent_graph.get_agent(infected_user_id)
+                 infected_user_agent = self._current_agent_graph.get_agent(infected_user_id)
              infected_user_agent.private_message_id = results_refute["post_id"]
              
              processed_users_for_action.update(users_to_refute_in_territory) # Mark as processed
@@ -615,28 +739,28 @@ class RumorControlFlow(Flow[RumorInfectionState]):
              inoculate_tasks = []
              print(f"Anchor {anchor_id} inoculating users: {users_to_inoculate_in_territory}")
              for sus_user_id in users_to_inoculate_in_territory:
-                 sus_user_agent = self.state.agent_graph.get_agent(sus_user_id)
+                 sus_user_agent = self._current_agent_graph.get_agent(sus_user_id)
                  if not sus_user_agent: continue
+                 if sus_user_id in inoc_apply_result_with_reason[anchor_id].keys():
+                    try:
+                        # NOTE: Crew kickoff sync. Generate personalized inoculation.
+                        inoc_crew_input = {
+                            "user": {"id": sus_user_id, "profile": sus_user_agent.user_info.description if hasattr(sus_user_agent, 'user_info') else ""},
+                            "reason_been_chosen": inoc_apply_result_with_reason[anchor_id][infected_user_id],
+                            "rumor": rumor_to_address.content,
+                            "topic": rumor_to_address.topic,
+                        }
+                        print(f"Running rumor_inoculation_crew for {sus_user_id}")
+                        gen_inoculation_text = rumor_inoculation_crew().crew().kickoff(inputs=inoc_crew_input) # Pass as dict
+                        print(f"rumor_inoculation_crew result: {gen_inoculation_text}")
 
-                 try:
-                      # NOTE: Crew kickoff sync. Generate personalized inoculation.
-                      inoc_crew_input = {
-                          "user": {"id": sus_user_id, "profile": sus_user_agent.user_info.description if hasattr(sus_user_agent, 'user_info') else ""},
-                          "reason_been_chosen": inoc_apply_result_with_reason[anchor_id][infected_user_id],
-                          "rumor": rumor_to_address.content,
-                          "topic": rumor_to_address.topic,
-                      }
-                      print(f"Running rumor_inoculation_crew for {sus_user_id}")
-                      gen_inoculation_text = rumor_inoculation_crew().crew().kickoff(inputs=inoc_crew_input) # Pass as dict
-                      print(f"rumor_inoculation_crew result: {gen_inoculation_text}")
+                        if not isinstance(gen_inoculation_text, str):
+                            print("Warning: Inoculation crew did not return string. Using default.")
+                            gen_inoculation_text = f"Be aware of information like '{rumor_to_address.content[:50]}...'. Stay critical!"
 
-                      if not isinstance(gen_inoculation_text, str):
-                          print("Warning: Inoculation crew did not return string. Using default.")
-                          gen_inoculation_text = f"Be aware of information like '{rumor_to_address.content[:50]}...'. Stay critical!"
-
-                 except Exception as e:
-                      print(f"Error during inoculation crew kickoff for {sus_user_id}: {e}")
-                      gen_inoculation_text = f"Be aware of information like '{rumor_to_address.content[:50]}...'. Stay critical!" # Default
+                    except Exception as e:
+                        print(f"Error during inoculation crew kickoff for {sus_user_id}: {e}")
+                        gen_inoculation_text = f"Be aware of information like '{rumor_to_address.content[:50]}...'. Stay critical!" # Default
 
                  # Post inoculation message
                  args = {"content": gen_inoculation_text}
@@ -649,7 +773,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
              results_inoc = await asyncio.gather(*inoculate_tasks, return_exceptions=True)
              
              for sus_user_id in users_to_inoculate_in_territory:
-                 sus_user_agent = self.state.agent_graph.get_agent(sus_user_id)
+                 sus_user_agent = self._current_agent_graph.get_agent(sus_user_id)
              sus_user_agent.private_message_id = results_inoc["post_id"]
              
              processed_users_for_action.update(users_to_inoculate_in_territory) # Mark as processed
@@ -663,7 +787,6 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                      broadcast_crew_input = {
                          "user": {"id": anchor_id, "profile": anchor_user_obj.user_info.description if hasattr(anchor_user_obj, 'user_info') else ""},
                          "rumor": rumor_to_address.content,
-                         # "graph": self.state.agent_graph, # If needed
                      }
                      print("Running broadcast_crew...")
                      gen_broadcast_text = broadcast_crew().crew().kickoff(inputs=broadcast_crew_input) # Pass as dict
@@ -687,7 +810,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                      like_tasks = []
                      other_anchor_ids = set(self.state.anchor_users) - {anchor_id}
                      for other_anchor_id in other_anchor_ids:
-                          other_anchor_agent = self.state.agent_graph.get_agent(other_anchor_id)
+                          other_anchor_agent = self._current_agent_graph.get_agent(other_anchor_id)
                           if other_anchor_agent:
                               like_args = {"post_id": post_id}
                               like_tasks.append(
@@ -696,6 +819,16 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                      await asyncio.gather(*like_tasks, return_exceptions=True) # Wait for likes
 
         print("Refute/Inoculate phase finished.")
+        return "silent"
+
+    
+    # @listen("silent")
+    # # @persist(CustomSQLitePersistence(db_path="rumor_flow_data.sqlite"))
+    # async def silent(self):
+    #     print("Flow is silent, no rumors detected or triggered.")
+    #     import time
+    #     time.sleep(5)
+    #     return
 
 
     # Helper for environment actions with error handling

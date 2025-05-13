@@ -226,6 +226,9 @@ class AgentGraph:
 
     def get_agent(self, agent_id: int) -> SocialAgent:
         return self.agent_mappings[agent_id]
+    
+    def get_agents_by_ids(self, agent_ids: list[int]) -> list[SocialAgent]:
+        return [self.agent_mappings[agent_id] for agent_id in agent_ids]
 
     def get_agents(self) -> list[tuple[int, SocialAgent]]:
         if self.backend == "igraph":

@@ -55,7 +55,7 @@ class SocialEnvironment(Environment):
     async def get_posts_list(self) -> list:
         posts = await self.action.refresh(-1) 
         if posts["success"]:
-            posts_env = json.dumps(posts["posts"], indent=4)
+            posts_env = posts["posts"]
         else:
             posts_env = []
         return posts_env

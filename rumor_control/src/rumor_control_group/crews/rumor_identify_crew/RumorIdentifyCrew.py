@@ -1,6 +1,9 @@
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
-
+# from crewai.project import CrewBase
+# from crewai.project.crew import crew
+# from crewai.project.agent import agent
+# from crewai.project.task  import task
 
 @CrewBase
 class RumorIdentifyCrew:
@@ -10,11 +13,12 @@ class RumorIdentifyCrew:
     tasks_config = "config/tasks.yaml"
 
     @agent
-    def rumor_identifier(self) -> Agent:
+    def rumor_identifier_agent(self) -> Agent:
         return Agent(
             config=self.agents_config["rumor_identifier_agent"],
             verbose=True,
             allow_delegation=False,
+            llm="glm-4-flash"
         )
 
     @task
@@ -22,6 +26,7 @@ class RumorIdentifyCrew:
         return Task(
             config=self.tasks_config["rumor_identification"],
             verbose=True,
+            # output_pydantic=str,
         )
 
     @crew

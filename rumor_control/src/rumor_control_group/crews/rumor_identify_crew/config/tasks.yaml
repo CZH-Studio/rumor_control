@@ -1,7 +1,10 @@
 rumor_identification:
   description: >
-    Identify whether the given message is a rumor or not.
+    Identify whether the given message is a rumor or not using logical reasoning and fact checking. 
+    return string "yes" or "no".
+
+    here is the content: {content}
 
   expected_output: >
-    yes/no. don't output anything else.
+    "yes" or "no". don't output anything else.
   agent: rumor_identifier_agent

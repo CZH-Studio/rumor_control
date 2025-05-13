@@ -17,7 +17,7 @@ class SusceptibilityTestCrew:
     def suscept_test_agent(self) -> Agent:
         return Agent(
             config=self.agents_config["suscept_test_agent"],
-            llm = "glm-4",
+            llm = "glm-4-flash",
             verbose=True,
         )
 

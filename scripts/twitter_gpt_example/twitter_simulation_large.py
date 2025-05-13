@@ -24,6 +24,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import time
 
 import pandas as pd
 from colorama import Back
@@ -248,6 +249,7 @@ async def running(
         private_territory=anchor_point,
         anchor_users=anchor_users,
         specialized_refute= False,
+        agent_graph=agent_graph,
         )
 
     for timestep in range(1, num_timesteps + 1):
@@ -271,7 +273,9 @@ async def running(
             # else:
             #     await agent.perform_action_by_hci() #手动输入行为
         await asyncio.gather(*tasks)
-        await Rumor_control_flow.kickoff_async({"agent_graph": agent_graph})
+        Rumor_control_flow.set_agent_graph(agent_graph)
+        await Rumor_control_flow.kickoff_async()
+        time.sleep(3)
         # agent_graph.visualize(f"timestep_{timestep}_social_graph.png")
 
     await twitter_channel.write_to_receive_queue((None, None, ActionType.EXIT))
