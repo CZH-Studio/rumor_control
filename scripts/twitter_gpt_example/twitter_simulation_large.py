@@ -28,11 +28,11 @@ from typing import Any
 import pandas as pd
 from colorama import Back
 from yaml import safe_load
-# from rumor_control.src.rumor_control_group.flow import RumorControlFlow
 
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+from rumor_control.src.rumor_control_group.my_flow import RumorControlFlow
 from oasis.clock.clock import Clock
 from oasis.social_agent.agents_generator import generate_agents
 from oasis.social_platform.channel import Channel
@@ -204,13 +204,13 @@ async def running(
         control_rate=0.1,
     )
     
-    selected_nodes = anchor_users  # 设置需要着色的节点索引
-    colors = [
-        'red' if idx in selected_nodes else 'lightgreen'
-        for idx in range(agent_graph.graph.vcount())
-    ]
-    agent_graph.visualize("initial_social_graph.png",vertex_color=colors)
-    print("visualized initial social graph")
+    # selected_nodes = anchor_users  # 设置需要着色的节点索引
+    # colors = [
+    #     'red' if idx in selected_nodes else 'green'
+    #     for idx in range(agent_graph.graph.vcount())
+    # ]
+    # agent_graph.visualize(path="initial_social_graph.png",vertex_color=colors)
+    # print("visualized initial social graph")
     
     #mist分析
     # await mist_analysis(agent_graph, "mist/mist_B4.csv")
@@ -244,8 +244,7 @@ async def running(
     
 
     # await mist_analysis(agent_graph, "mist/mist_Aft.csv")
-    
-    # Rumor_control_flow = RumorControlFlow(anchor_point, anchor_users)
+    Rumor_control_flow = RumorControlFlow(private_territory=anchor_point,anchor_users=anchor_users)
 
     for timestep in range(1, num_timesteps + 1):
         os.environ["SANDBOX_TIME"] = str(timestep * 3)
@@ -268,7 +267,7 @@ async def running(
             # else:
             #     await agent.perform_action_by_hci() #手动输入行为
         await asyncio.gather(*tasks)
-        # Rumor_control_flow.kickoff(agent_graph)
+        await Rumor_control_flow.kickoff_async({"agent_graph": agent_graph})
         # agent_graph.visualize(f"timestep_{timestep}_social_graph.png")
 
     await twitter_channel.write_to_receive_queue((None, None, ActionType.EXIT))

@@ -86,15 +86,13 @@ class SocialAgent:
                 temperature=0.5,
                 # tool_choice="required",
             )
-        if self.model_type == None:
-            pass
-        elif self.is_openai_model:
+        if self.is_openai_model:
             self.model_backend = ModelFactory.create( #创建openai模型
                 model_platform=ModelPlatformType.OPENAI, #基于openai平台
                 model_type=ModelType(self.model_type), #openai模型类型
                 model_config_dict=model_config.as_dict(), #注入参数
             )
-        elif self.model_type[:3] == "glm":
+        else:
             model_config_dict = model_config.as_dict()
             filtered_config = {
                 k: v for k, v in model_config_dict.items()
