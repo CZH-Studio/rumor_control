@@ -238,18 +238,21 @@ async def generate_agents(
         anchor_users = []
         anchor_point = []
         g = agent_graph.graph
-        num_anchor = g.vcount()
-        in_degrees = np.array(g.degree(mode="in")[:int(num_anchor*control_rate)])
+        vnum= g.vcount()
+        in_degrees = np.array(g.degree(mode="in"))
         sorted_indices = np.argsort(-in_degrees)
-        for idx in sorted_indices:
-            print("sorted_indices: ",idx, in_degrees[idx])
+        sorted_indices = list(sorted_indices)[:int(vnum*control_rate)]
+        # for idx in sorted_indices:
+        #     print("sorted_indices: ",idx, in_degrees[idx])
         sorted_names = [g.vs[index]["name"] for index in sorted_indices]
         
         for name in sorted_names:
-            print("anchor_point: ",name)
-            anchor_point.append(int(name))
-            anchor_users.append(int(random.choice(get_predecessors_by_name(g, name))))
-            agent_graph.get_agent(int(name)).user_info.is_controllable = True
+            anc = get_predecessors_by_name(g, name)
+            if anc:
+                anchor_users.append(int(random.choice(anc)))
+                anchor_point.append(int(name))
+                agent_graph.get_agent(int(name)).user_info.is_controllable = True
+            else: break
 
     return agent_graph, anchor_users, anchor_point
 

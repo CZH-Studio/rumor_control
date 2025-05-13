@@ -1,0 +1,8 @@
+oasis\Lib\site-packages\crewai\utilities\constants.py
+TRAINING_DATA_FILE = "training_data.pkl"
+TRAINED_AGENTS_DATA_FILE = "trained_agents_data.pkl"
+DEFAULT_SCORE_THRESHOLD = 0.35
+KNOWLEDGE_DIRECTORY = "rumor_control/knowledge"
+MAX_LLM_RETRY = 3
+MAX_FILE_NAME_LENGTH = 255
+EMITTER_COLOR = "bold_blue"
