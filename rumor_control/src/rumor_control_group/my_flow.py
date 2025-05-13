@@ -5,13 +5,11 @@ import warnings
 import asyncio
 from typing import List, Optional, Any # Added Any
 import json
-from pydantic import BaseModel
-from datetime import datetime
 
 from oasis.social_agent import AgentGraph, SocialAgent
 from oasis.social_platform.typing import ActionType
 
-from crewai.flow.flow import Flow, FlowState, listen, or_, and_, router, start, FlowPersistence
+from crewai.flow.flow import Flow, listen, router, start, FlowPersistence
 from crewai.flow.persistence import persist, SQLiteFlowPersistence # Added SQLiteFlowPersistence for default
 from crewai import LLM
 
@@ -21,43 +19,11 @@ from rumor_control.src.rumor_control_group.crews.recommend_predict_crew import R
 from rumor_control.src.rumor_control_group.crews.rumor_refute_crew import rumor_refute_crew
 from rumor_control.src.rumor_control_group.crews.rumor_inoculation_crew import rumor_inoculation_crew
 from rumor_control.src.rumor_control_group.crews.broadcast_crew import broadcast_crew
-# from rumor_control.src.rumor_control_group.crews.recommend_predict_crew import recommend_predict_crew
+
+from rumor_control.src.rumor_control_group.data_type.data_types import *
+from rumor_control.src.rumor_control_group.data_type.constants import *
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
-
-# --- State Definitions (Keep as is) ---
-class UserState(BaseModel):
-    susceptible: set[int] = set()
-    infected: set[int] = set()
-    recovered: set[int] = set()
-    still_infected: set[int] = set()
-
-class InspectState(BaseModel):
-    private_territory: set[int] = set()
-    userstate: UserState = UserState()
-    triggered: bool = False
-
-class RumorSource(BaseModel):
-    # created_time: datetime
-    post_id : int
-    user_id: int
-    content: str = ""
-    refute: str = ""
-    topic: str = ""
-
-class RumorInfectionState(FlowState):
-    class Config:
-        arbitrary_types_allowed = True
-    # Ensure AgentGraph default is handled if needed, or passed in kickoff_async
-    agent_graph: Optional[AgentGraph] = None # Make optional if passed via kickoff
-    anchor_users: List[int] = []
-    inspect_division: dict[int, InspectState] = {}
-    rumor_sources: List[RumorSource] = []
-    territory: set[int] = set() # Initialize territory based on anchor_users later
-    refute_applyment: set[int] = set()
-    inoculation_applyment: set[int] = set()
-    newly_infected: tuple = () # Initialize as empty tuple
-    broadcast_anchors: dict[int, str] = {}
 
 # Use method-level persistence
 class RumorControlFlow(Flow[RumorInfectionState]):
@@ -68,6 +34,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         self,
         private_territory: List[int],
         anchor_users: List[int],
+        specialized_refute: bool,
         persistence: Optional[FlowPersistence] = None, # Optional persistence
         **kwargs: Any # Accept other kwargs for Flow base class
     ):
@@ -80,7 +47,8 @@ class RumorControlFlow(Flow[RumorInfectionState]):
              self._state = self.initial_state() if isinstance(self.initial_state, type) else self.initial_state
 
         self.state.anchor_users = anchor_users
-        self.state.territory = set(anchor_users) # Initialize territory here
+        self.state.territory = set(anchor_users) # Initialize territory 
+        self.specialized_refute = specialized_refute
 
         # Initialize inspect_division properly
         if not hasattr(self.state, 'inspect_division') or self.state.inspect_division is None:
@@ -97,25 +65,17 @@ class RumorControlFlow(Flow[RumorInfectionState]):
             if i < len(private_territory):
                 self.state.inspect_division[anchor_id].private_territory.add(private_territory[i])
 
-        # Consider initializing LLM here if needed consistently
-        # self.llm = LLM(model="glm-4", response_format=str) # Make sure LLM is async compatible if used in async methods
+        self.llm = LLM(model="glm-4")
 
     # --- Flow Methods (Make Async) ---
 
     @start()
-    @persist() # Add persist decorator here
-    async def detect(self): # Mark async, add type hint
-        # --- Access agent_graph FROM THE STATE ---
+    @persist()
+    async def detect(self):
         agent_graph = self.state.agent_graph
-        # --- Check if the graph exists in the state ---
         if agent_graph is None:
             print("Error: agent_graph not found in flow state during detect.")
-            # Decide how to handle: raise error, return, etc.
-            # If kickoff_async was called correctly with {"agent_graph":...}
-            # this state *should* be populated by _initialize_state.
-            # Double-check RumorInfectionState allows arbitrary types if AgentGraph isn't standard pydantic.
-            # (It does have Config arbitrary_types_allowed = True)
-            return # Or raise Exception("AgentGraph missing in state"
+            return
 
         self.state.newly_infected = tuple()
         self.state.refute_applyment = set()
@@ -126,71 +86,31 @@ class RumorControlFlow(Flow[RumorInfectionState]):
              print("Warning: No anchor users found in the graph.")
              return
 
-        # If LLM is used, ensure it's async
-        # llm = LLM(model="glm-4", response_format=str) # Or get from self.llm if initialized
-
         for anchor_user in anchor_users:
             anchor_id = anchor_user.agent_id
             print(f"anchor_user_{anchor_id} receive message:")
             # Assuming env.to_text_prompt is synchronous or fast
-            context_data = anchor_user.env.to_text_prompt()
+            context_data = anchor_user.env.get_posts_list()
 
-            # Safely access posts - check structure
-            posts_list = []
-            if isinstance(context_data, (list, tuple)) and len(context_data) > 2 and "posts" in context_data[2]:
-                posts_list = context_data[2]["posts"]
-                # Handle potential non-list posts_list
-                if not isinstance(posts_list, list): posts_list = []
-            elif isinstance(context_data, dict) and "posts" in context_data: # Alternative structure check
-                posts_list = context_data["posts"]
-                if not isinstance(posts_list, list): posts_list = []
-
-            if not posts_list:
-                 print(f"No posts found for anchor_user_{anchor_id}")
-                 continue
-
-            # Assuming the first element contains the list of actual posts
-            actual_posts = posts_list[0] if posts_list and isinstance(posts_list[0], list) else posts_list
-
-            if not isinstance(actual_posts, list):
-                 print(f"Posts data format unexpected for anchor_user_{anchor_id}. Expected list.")
-                 continue
-
-            # Initialize inspect_division for the anchor if missing
-            if anchor_id not in self.state.inspect_division:
-                self.state.inspect_division[anchor_id] = InspectState()
-
-
-            for post in actual_posts: # Iterate through the actual posts
+            for post in context_data:
                 if not isinstance(post, dict): # Ensure post is a dict
                     print(f"Skipping invalid post item for anchor_user_{anchor_id}: {post}")
                     continue
 
-                print("post: ", json.dumps(post, indent=2)) # Use json.dumps for better printing
-                user_id_str = post.get("user_id")
+                print("post: ", json.dumps(post, indent=2))
+                user_id = int(post.get("user_id"))
                 content = post.get("content", "")
                 post_id = post.get("post_id")
-
-                if user_id_str is None or post_id is None:
-                     print(f"Skipping post with missing user_id or post_id for anchor_user_{anchor_id}")
-                     continue
-
-                try:
-                    user_id = int(user_id_str)
-                except (ValueError, TypeError):
-                    print(f"Skipping post with invalid user_id '{user_id_str}' for anchor_user_{anchor_id}")
-                    continue
 
                 # --- is_rumor (can remain sync helper or integrate) ---
                 def is_rumor_sync(post_content):
                     if post_content in [r.content for r in self.state.rumor_sources]:
                         return "old"
-                    # NOTE: Crew kickoff is sync, might block. Consider async kickoff if available.
                     try:
                          # Ensure input is just the content string
                          crew_input = {"input": post_content}
                          print(f"Running RumorIdentifyCrew with input: {crew_input}")
-                         result = RumorIdentifyCrew().crew().kickoff(inputs=crew_input) # Pass as dict
+                         result = RumorIdentifyCrew().crew().kickoff(inputs=crew_input)
                          print(f"RumorIdentifyCrew result: {result}")
                          if isinstance(result, str) and result.strip().lower() == "yes":
                              return "new"
@@ -199,15 +119,9 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                     except Exception as e:
                         print(f"Error during RumorIdentifyCrew kickoff: {e}")
                         return "not_rumor" # Default to not_rumor on error
-                # ---
-
-                # Initialize private territory if needed
-                if not isinstance(self.state.inspect_division[anchor_id].private_territory, set):
-                    self.state.inspect_division[anchor_id].private_territory = set()
 
                 #来自广域网的消息 TODO :告知队友
                 if user_id not in self.state.inspect_division[anchor_id].private_territory:
-                    # Handle non-private territory posts if needed
                     pass
 
                 # Call the sync helper
@@ -241,24 +155,24 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                             llm_call_needed = True # Set flag if LLM needed
                             if llm_call_needed and hasattr(self, 'llm') and self.llm:
                                  try:
-                                     # Ensure self.llm has an async call method like 'acall'
                                      response = await self.llm.acall(
                                          f"you see a post: {json.dumps(post)}. Categorize the topic of the post. don't output anything else."
                                      )
-                                     topic = response.choices[0].message.content # Adjust based on actual response structure
+                                     topic = response.choices[0].message.content
                                      print("rumor topic: ",topic)
                                  except Exception as e:
                                      print(f"LLM call failed: {e}")
+                                     topic = "news"
                             else:
                                 # Fallback or skip topic generation if LLM not available/needed
                                 print("Skipping LLM topic generation.")
                                 topic = "news" # Assign default topic
                             self.state.rumor_sources.append(RumorSource(post_id=post_id, user_id=user_id, content=content, refute="", topic=topic))
 
-                        current_user_state.susceptible.discard(user_id) # Use discard
+                        current_user_state.susceptible.discard(user_id)
                         current_user_state.infected.add(user_id)
 
-                        #其所有关注者也感染 (Graph operations likely sync)
+                        #其所有关注者也感染
                         g = agent_graph.graph
                         try:
                             # Ensure user_id exists as a vertex
@@ -284,10 +198,9 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                         except Exception as e:
                             print(f"Error processing followers for user {user_id}: {e}")
 
-                    else: #易感者发帖不再涉及谣言
-                        # No state change needed if susceptible posts non-rumor? Or move to recovered?
-                        # Assuming they remain susceptible unless infected.
-                        pass
+                    else: #如果易感者发帖不再涉及谣言，则视为康复
+                        current_user_state.susceptible.discard(user_id)
+                        current_user_state.recovered.add(user_id)
 
                 #感染者发帖
                 elif user_id in current_user_state.infected:
@@ -296,7 +209,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                         current_user_state.recovered.add(user_id)
                     else: #如果继续转发谣言
                         current_user_state.infected.discard(user_id)
-                        current_user_state.still_infected.add(user_id) # Consider them persistently infected
+                        current_user_state.still_infected.add(user_id) #辟谣次数用光，不再进行辟谣
 
                 #未能治愈者发帖
                 elif user_id in current_user_state.still_infected:
@@ -307,13 +220,15 @@ class RumorControlFlow(Flow[RumorInfectionState]):
 
                 #康复者发帖
                 elif user_id in current_user_state.recovered:
-                    # Could re-infect? Or promote refutation?
+                    # TODO: Could re-infect? Or promote refutation?
                     pass # No action for recovered users posting for now
+                
+                #TODO: 局势分析crew,用于决定broadcastCrew名单
 
 
     @router(detect)
     @persist()
-    async def if_triggered(self): # Mark async
+    async def if_triggered(self):
         for anc in self.state.anchor_users:
              # Check if anchor exists and is triggered
              if anc in self.state.inspect_division and self.state.inspect_division[anc].triggered:
@@ -325,7 +240,7 @@ class RumorControlFlow(Flow[RumorInfectionState]):
 
     @listen("activated")
     @persist()
-    async def select(self): # Mark async
+    async def select(self):
         agent_graph = self.state.agent_graph # Get graph from state
         if agent_graph is None:
              print("Error: agent_graph not available in select state.")
@@ -349,6 +264,9 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         inoc_apply_final = set()
 
         processed_anchors = set() # Track anchors whose territory has been processed this round
+        
+        ref_apply_result_with_reason = {}
+        inoc_apply_result_with_reason = {}
 
         for anchor_user_obj in self.state.agent_graph.get_agents(self.state.anchor_users):
             anchor_id = anchor_user_obj.agent_id
@@ -356,6 +274,9 @@ class RumorControlFlow(Flow[RumorInfectionState]):
             # Skip if anchor not triggered or already processed its part
             if anchor_id not in self.state.inspect_division or not self.state.inspect_division[anchor_id].triggered or anchor_id in processed_anchors:
                 continue
+            
+            ref_apply_result_with_reason[anchor_id] = {}
+            inoc_apply_result_with_reason[anchor_id] = {}
 
             print(f"Processing selection for anchor {anchor_id}")
             processed_anchors.add(anchor_id) # Mark as processed
@@ -388,7 +309,10 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                     }
                     print(f"Running SusceptibilityTestCrew (refute) with input: {ref_apply_crew_input}")
                     ref_apply_result = SusceptibilityTestCrew().crew().kickoff(inputs=ref_apply_crew_input) # Pass as dict
+                    for ref_with_reason in ref_apply_result:
+                        ref_apply_result_with_reason[anchor_id][ref_with_reason["user_id"]] = ref_with_reason["reason"]
                     print(f"SusceptibilityTestCrew (refute) result: {ref_apply_result}")
+                    
 
                     if isinstance(ref_apply_result, list):
                          ref = {selec_usr["user_id"] for selec_usr in ref_apply_result if isinstance(selec_usr, dict) and "user_id" in selec_usr}
@@ -439,13 +363,14 @@ class RumorControlFlow(Flow[RumorInfectionState]):
             if profiles_for_inoculation:
                 num_to_inoculate = max(1, int(0.2 * len(profiles_for_inoculation))) # Inoculate at least 1
                 try:
-                    # NOTE: Crew kickoff is sync.
                     inoc_apply_crew_input = {
                         "num": num_to_inoculate,
                         "personal_profile": profiles_for_inoculation,
                     }
                     print(f"Running SusceptibilityTestCrew (inoculation) with input: {inoc_apply_crew_input}")
                     inoc_apply_result = SusceptibilityTestCrew().crew().kickoff(inputs=inoc_apply_crew_input) # Pass as dict
+                    for inoc_with_reason in ref_apply_result:
+                        inoc_apply_result_with_reason[anchor_id][inoc_with_reason["user_id"]] = inoc_with_reason["reason"]
                     print(f"SusceptibilityTestCrew (inoculation) result: {inoc_apply_result}")
 
                     if isinstance(inoc_apply_result, list):
@@ -483,7 +408,6 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                  if other_anchor_id in self.state.inspect_division:
                      other_anchor_state = self.state.inspect_division[other_anchor_id]
                      # Check if the other anchor is NOT triggered (or has very few susceptible - adjust criteria)
-                     # Let's target non-triggered anchors for pre-emptive inoculation
                      if not other_anchor_state.triggered:
                           # Select some users from the other anchor's territory as candidates
                           # Using private_territory, limit the number
@@ -513,7 +437,6 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                     poster_profile = poster_agent.user_info.description if poster_agent else "Unknown"
 
                     try:
-                        # NOTE: Crew kickoff is sync.
                         rec_predict_input = {
                             "num": num_cross_domain,
                             "rec_type": current_anchor_agent.user_info.recsys_type if hasattr(current_anchor_agent.user_info, 'recsys_type') else "default",
@@ -562,19 +485,18 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         print(f"Select finished. Refute Set: {self.state.refute_applyment}, Inoculation Set: {self.state.inoculation_applyment}")
         # Return structure might need adjustment based on how @listen uses it,
         # but returning the final sets seems logical.
-        return list(self.state.refute_applyment), list(self.state.inoculation_applyment)
+        return ref_apply_result_with_reason, inoc_apply_result_with_reason
 
 
     @listen("silent")
-    @persist()
-    async def silent(self): # Mark async
+    async def silent(self):
         print("Flow is silent, no rumors detected or triggered.")
         pass
 
 
     @listen(select)
     @persist()
-    async def refute(self): # Mark async
+    async def refute(self, ref_apply_result_with_reason, inoc_apply_result_with_reason):
         agent_graph = self.state.agent_graph # Get graph from state
         if agent_graph is None:
              print("Error: agent_graph not available in refute state.")
@@ -596,9 +518,10 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                  # Need a representative user or context for generic refute
                  refute_crew_input = {
                      # Provide necessary context based on crew needs
+                     "profile": REPRESENTATIVE_USER_PROFILE, # If needed
+                     "reason_been_chosen": REPRESENTATIVE_REASON_BEEN_CHOSEN,
                      "rumor": rumor_to_address.content,
-                     # "user": representative_user_profile, # If needed
-                     # "graph": self.state.agent_graph, # If needed
+                     "topic": rumor_to_address.topic,
                  }
                  print(f"Running rumor_refute_crew with input: {refute_crew_input}")
                  generated_refute = rumor_refute_crew().crew().kickoff(inputs=refute_crew_input) # Pass as dict
@@ -647,15 +570,42 @@ class RumorControlFlow(Flow[RumorInfectionState]):
              for infected_user_id in users_to_refute_in_territory:
                  infected_user_agent = self.state.agent_graph.get_agent(infected_user_id)
                  if not infected_user_agent: continue
+                 if self.sepcialized_refute and infected_user_id in ref_apply_result_with_reason[anchor_id].keys():
+                    try:
+                        # NOTE: Crew kickoff sync. Generate personalized refute.
+                        ref_crew_input = {
+                            "profile": sus_user_agent.user_info.description if hasattr(sus_user_agent, 'user_info') else "",
+                            "reason_been_chosen": ref_apply_result_with_reason[anchor_id][infected_user_id],
+                            "rumor": rumor_to_address.content,
+                            "topic": rumor_to_address.topic,
+                        }
+                        print(f"Running rumor_refute_crew for {sus_user_id}")
+                        gen_inoculation_text = rumor_inoculation_crew().crew().kickoff(inputs=ref_crew_input) # Pass as dict
+                        print(f"rumor_inoculation_crew result: {gen_inoculation_text}")
 
+                        if not isinstance(gen_inoculation_text, str):
+                            print("Warning: Inoculation crew did not return string. Using default.")
+                            gen_inoculation_text = f"Be aware of information like '{rumor_to_address.content[:50]}...'. Stay critical!"
+
+                    except Exception as e:
+                        print(f"Error during inoculation crew kickoff for {sus_user_id}: {e}")
+                        gen_inoculation_text = refute_text
+
+                 else:
                  # Send refute as a post or direct message? Assuming CREATE_POST for broad reach
-                 args = {"content": refute_text}
+                    gen_inoculation_text = refute_text
+                 args = {"content": gen_inoculation_text}
                  print(f"Anchor {anchor_id} creating refute post targeting user context (indirectly) {infected_user_id}")
                  # Action likely async
                  refute_tasks.append(
                      self.perform_env_action(anchor_user_obj, ActionType.CREATE_POST, args, target_user_id=infected_user_id)
                  )
              results_refute = await asyncio.gather(*refute_tasks, return_exceptions=True)
+             
+             for infected_user_id in users_to_refute_in_territory:
+                 infected_user_agent = self.state.agent_graph.get_agent(infected_user_id)
+             infected_user_agent.private_message_id = results_refute["post_id"]
+             
              processed_users_for_action.update(users_to_refute_in_territory) # Mark as processed
              # Process results if needed (e.g., store post_id)
 
@@ -672,8 +622,9 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                       # NOTE: Crew kickoff sync. Generate personalized inoculation.
                       inoc_crew_input = {
                           "user": {"id": sus_user_id, "profile": sus_user_agent.user_info.description if hasattr(sus_user_agent, 'user_info') else ""},
+                          "reason_been_chosen": inoc_apply_result_with_reason[anchor_id][infected_user_id],
                           "rumor": rumor_to_address.content,
-                          # "graph": self.state.agent_graph, # If needed
+                          "topic": rumor_to_address.topic,
                       }
                       print(f"Running rumor_inoculation_crew for {sus_user_id}")
                       gen_inoculation_text = rumor_inoculation_crew().crew().kickoff(inputs=inoc_crew_input) # Pass as dict
@@ -696,6 +647,11 @@ class RumorControlFlow(Flow[RumorInfectionState]):
                  )
 
              results_inoc = await asyncio.gather(*inoculate_tasks, return_exceptions=True)
+             
+             for sus_user_id in users_to_inoculate_in_territory:
+                 sus_user_agent = self.state.agent_graph.get_agent(sus_user_id)
+             sus_user_agent.private_message_id = results_inoc["post_id"]
+             
              processed_users_for_action.update(users_to_inoculate_in_territory) # Mark as processed
              # Process results if needed
 
@@ -749,30 +705,12 @@ class RumorControlFlow(Flow[RumorInfectionState]):
         log_target = f" for target context {target_user_id}" if target_user_id else ""
         try:
             action_func = getattr(agent.env.action, action_name)
-            # Check if action_func is awaitable
-            if asyncio.iscoroutinefunction(action_func):
-                 result = await action_func(**args)
-            else:
-                 # If the action function itself isn't async, run it directly.
-                 # Warning: This might block if the sync action performs long I/O.
-                 result = action_func(**args)
-                 if asyncio.iscoroutine(result): # Double check if it returned a coroutine
-                     print(f"Warning: Sync action {action_name} returned a coroutine unexpectedly.")
-                     result = await result # Await it just in case
-
+            result = await action_func(**args)
             print(f"Agent {agent.agent_id} performed action {action_name}{log_target}. Result: {result}")
-            # Store post_id if relevant (example for CREATE_POST)
-            # if action_type == ActionType.CREATE_POST and isinstance(result, dict) and 'post_id' in result and target_user_id:
-            #      # Decide how to associate post_id with the target (e.g., add to agent state)
-            #      # target_agent = self.state.agent_graph.get_agent(target_user_id)
-            #      # if target_agent: target_agent.some_attribute = result['post_id']
-            #      pass
             return result
         except AttributeError:
             print(f"Error: Action '{action_name}' not found for agent {agent.agent_id}.")
             return None
         except Exception as e:
             print(f"Error performing action {action_name} for agent {agent.agent_id}{log_target}: {e}")
-            # import traceback
-            # traceback.print_exc() # Uncomment for detailed traceback
             return None

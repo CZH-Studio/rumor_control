@@ -51,6 +51,14 @@ class SocialEnvironment(Environment):
         else:
             posts_env = "After refreshing, there are no existing posts."
         return posts_env
+    
+    async def get_posts_list(self) -> list:
+        posts = await self.action.refresh(-1) 
+        if posts["success"]:
+            posts_env = json.dumps(posts["posts"], indent=4)
+        else:
+            posts_env = []
+        return posts_env
 
     async def get_followers_env(self) -> str:
         # TODO: Implement followers env

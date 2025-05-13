@@ -244,7 +244,11 @@ async def running(
     
 
     # await mist_analysis(agent_graph, "mist/mist_Aft.csv")
-    Rumor_control_flow = RumorControlFlow(private_territory=anchor_point,anchor_users=anchor_users)
+    Rumor_control_flow = RumorControlFlow(
+        private_territory=anchor_point,
+        anchor_users=anchor_users,
+        specialized_refute= False,
+        )
 
     for timestep in range(1, num_timesteps + 1):
         os.environ["SANDBOX_TIME"] = str(timestep * 3)
