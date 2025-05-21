@@ -1,38 +1,27 @@
-recsys_predict:
+suscept_evaluation:
   description: >
-    Evaluate a user's susceptibility to rumors online based on the provided personal profile
-    and choose the {num} most susceptible user for the rumor clarification.
+    Evaluate the given users' susceptibility to rumors based on the provided information.
+    choose {num} most susceptible users from {candidates} and provide a reasoning for each choice.
 
-    Use your expertise in social psychology and focus on psychological factors that contribute to susceptibility and
-    identify the most susceptible users.
-
-    PERSONAL PROFILE:
+    personal_profile:
     [
       {
-        "user_id": user_id_1,
-        "user_profile": "user_profile_1",
-      },
-      {
-        "user_id": user_id_1,
-        "user_profile": "user_profile_1",
+        "user_id": id,
+        "user_profile": "user_profile",
       },
       ...
     ]
     
-    for each user you choosed, your answer MUST include:
-    - The selected user's ID(int)
-    - A breif reasoning for your choice with less than 20 words
+    for each user you selected, your answer MUST include:
+    - The selected user's id (int)
+    - A brief reasoning for your choice with less than 20 words
 
   expected_output: >
     A list of user IDs and a brief reasoning for each choice:
     [
       {
-        "user_id": user_id_1,
-        "reasoning": "reasoning for user_id_1"
-      },
-      {
-        "user_id": user_id_2,
-        "reasoning": "reasoning for user_id_2"
+        "user_id": selected id,
+        "reason": "reasoning for choice"
       },
       ...
     ]

@@ -119,7 +119,8 @@ async def generate_agents(
         }
         profile["other_info"]["user_profile"] = agent_info["user_char"][
             agent_id]
-        profile["other_info"]["mbti"] = random.choice(mbti_types)
+        # profile["other_info"]["mbti"] = random.choice(mbti_types)
+        profile["other_info"]["mbti"] = agent_info["mbti"][agent_id]
         profile["other_info"]["activity_level_frequency"] = ast.literal_eval(
             agent_info["activity_level_frequency"][agent_id])
         profile["other_info"]["active_threshold"] = prob_list[agent_id] #生成活跃向量
@@ -234,9 +235,9 @@ async def generate_agents(
         predecessor_names = [graph.vs[i]["name"] for i in predecessor_indices]
         return predecessor_names
     
+    anchor_users = []
+    anchor_point = []
     if rumor_control:
-        anchor_users = []
-        anchor_point = []
         g = agent_graph.graph
         vnum= g.vcount()
         in_degrees = np.array(g.degree(mode="in"))

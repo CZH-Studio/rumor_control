@@ -216,6 +216,15 @@ class AgentGraph:
         else:
             self.graph.delete_agent(agent.agent_id)
         del self.agent_mappings[agent.agent_id]
+    
+    def remove_agents_by_ids(self, agent_ids: list[int]):
+        for agent_id in agent_ids:
+            if self.backend == "igraph":
+                self.graph.delete_vertices(agent_id)
+            else:
+                self.graph.delete_agent(agent_id)
+            del self.agent_mappings[agent_id]
+        
 
     def remove_edge(self, agent_id_0: int, agent_id_1: int):
         if self.backend == "igraph":

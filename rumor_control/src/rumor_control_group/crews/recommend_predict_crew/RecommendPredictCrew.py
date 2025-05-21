@@ -17,14 +17,14 @@ class RecommendPredictCrew:
         return Agent(
             config=self.agents_config["recommend_predict_agent"],
             verbose=True,
-            llm="glm-4",
+            llm="glm-z1-flash",
         )
 
     @task
     def recsys_predict_task(self) -> Task:
         return Task(
             config=self.tasks_config["recsys_predict"],
-            output_pydantic=List[int],
+            # output_pydantic=List[int],
         )
 
     @crew
@@ -35,6 +35,5 @@ class RecommendPredictCrew:
             tasks=self.tasks,
             process=Process.sequential,
             verbose=True,
-            llm="glm-4",
             knowledge_sources=[textknowledge],
         )

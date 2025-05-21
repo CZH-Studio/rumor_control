@@ -1,9 +1,5 @@
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
-# from crewai.project import CrewBase
-# from crewai.project.crew import crew
-# from crewai.project.agent import agent
-# from crewai.project.task  import task
 
 @CrewBase
 class RumorIdentifyCrew:
@@ -18,7 +14,7 @@ class RumorIdentifyCrew:
             config=self.agents_config["rumor_identifier_agent"],
             verbose=True,
             allow_delegation=False,
-            llm="glm-4-flash"
+            llm="glm-z1-flash"
         )
 
     @task

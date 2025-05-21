@@ -28,6 +28,7 @@ class RumorSource(BaseModel):
     content: str = ""
     refute: str = ""
     topic: str = ""
+    created_timestep: int
 
 class RumorInfectionState(FlowState):
     class Config:
@@ -41,8 +42,9 @@ class RumorInfectionState(FlowState):
     territory: set[int] = set() # Initialize territory based on anchor_users later
     refute_applyment: set[int] = set()
     inoculation_applyment: set[int] = set()
-    newly_infected: tuple = () # Initialize as empty tuple
+    # newly_infected: dict[int,tuple] = [] # Initialize as empty list
     broadcast_anchors: dict[int, str] = {}
+    post_refute: set[tuple[int, int, str, str]] = set()
 
 # class RumorInfectionState(FlowState): # 假设 RumorInfectionState 继承自 FlowState
 #     # ... 其他状态属性 ...

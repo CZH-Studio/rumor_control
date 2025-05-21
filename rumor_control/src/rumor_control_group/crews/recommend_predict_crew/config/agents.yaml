@@ -1,4 +1,4 @@
-hr_evaluation_agent:
+recommend_predict_agent:
   role: >
     An Expert of Social Media recommendation algorithms.
   goal: >

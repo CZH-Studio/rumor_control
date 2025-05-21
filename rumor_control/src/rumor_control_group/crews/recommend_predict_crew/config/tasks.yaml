@@ -1,30 +1,12 @@
-evaluate_candidate:
+recsys_predict:
   description: >
-    Given the personal information of posterA and some other recievers(user1, user2, ...), a post created by posterA 
-    and the corrisponding recommendation pattern, predict most possible recievers the post will be recommended to.
-    you can choose less than {num} recievers for the answer.
+    user with description {user_profile} have {fan_count} followers. he/she post a rumor post {post} 
+    created at {created_timestamp}, and current timestamp is {current_timestamp}. The rumor post is likely 
+    to be recommend to recievers {candidates} by the recommendation system {rec_type}. Given recievers' 
+    personal information, choose 0~{num} most possible recievers the post will be recommended to by predicting 
+    the recommendation pattern:
 
-    The type of the recommendation pattern is {rec_type}.
-
-    posterA's personal information and post:
-    {
-        "user_id": posterA_id,
-        "user_profile": posterA_profile,
-        "post": posterA_post,
-    }
-
-    recievers' personal information:
-    [
-      {
-        "user_id": reciever_id_1,
-        "user_profile": "reciever_profile_1",
-      },
-      {
-        "user_id": reciever_id_1,
-        "user_profile": "reciever_profile_1",
-      },
-      ...
-    ]
+    {recievers}
 
     You can resort to knowledge sources for more information about corresponding recommendation pattern.
 

@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import random
+import numpy as np
 random.seed(42)
 import sys
 from datetime import datetime
@@ -113,12 +114,16 @@ async def running(
     csv_path: str | None = DEFAULT_CSV_PATH,
     num_timesteps: int = 3,
     clock_factor: int = 60,
-    recsys_type: str = "reddit",#"twhin-bert"
+    recsys_type: str = "twhin-bert",
     model_configs: dict[str, Any] | None = None,
     inference_configs: dict[str, Any] | None = None,
     actions: dict[str, Any] | None = None,
     action_space_file_path: str = None,
     mist_type: str = "MIST-20",
+    rumor_control = False,
+    control_rate: float = 0.05,
+    ban_node: bool = True,
+    ban_betweenness: bool = False,
 ) -> None:
     db_path = DEFAULT_DB_PATH if db_path is None else db_path
     csv_path = DEFAULT_CSV_PATH if csv_path is None else csv_path
@@ -147,6 +152,7 @@ async def running(
     twitter_task = asyncio.create_task(infra.running())
     is_openai_model = inference_configs["is_openai_model"]
     is_openai_model = False
+    rumor = ""
     try:
         all_topic_df = pd.read_csv("data/twitter_dataset/all_topics.csv")
         if "False" in csv_path or "True" in csv_path:
@@ -155,6 +161,8 @@ async def running(
             else:
                 topic_name = csv_path.split("/")[-1].split(".")[0].split(
                     "-")[0]
+            rumor = str(all_topic_df[all_topic_df["topic_name"] ==
+                             topic_name]["source_tweet"].item().split(".")[0])
             source_post_time = (
                 all_topic_df[all_topic_df["topic_name"] ==
                              topic_name]["start_time"].item().split(" ")[1])
@@ -163,6 +171,9 @@ async def running(
     except Exception:
         print("No real-world data, let start_hour be 1PM")
         start_hour = 13
+    
+
+    print(f"rumor: {rumor}")
 
     model_configs = model_configs or {}
 
@@ -201,18 +212,43 @@ async def running(
         is_openai_model=is_openai_model,
         **model_configs,
         mist_type=mist_type,
-        rumor_control = True,
-        control_rate=0.1,
+        rumor_control = rumor_control,
+        control_rate=control_rate,
     )
     
-    # selected_nodes = anchor_users  # 设置需要着色的节点索引
-    # colors = [
-    #     'red' if idx in selected_nodes else 'green'
-    #     for idx in range(agent_graph.graph.vcount())
-    # ]
-    # agent_graph.visualize(path="initial_social_graph.png",vertex_color=colors)
-    # print("visualized initial social graph")
+    selected_nodes = anchor_users  # 设置需要着色的节点索引
+    colors = [
+        'red' if idx in selected_nodes else 'green'
+        for idx in range(agent_graph.graph.vcount())
+    ]
+    agent_graph.visualize(path="initial_social_graph.png",vertex_color=colors)
+    print("visualized initial social graph")
     
+    g = agent_graph.graph
+    vnum= g.vcount()
+    #删除节点
+    if ban_node:
+        in_degrees = np.array(g.degree(mode="in"))
+        sorted_indices = np.argsort(-in_degrees)
+        sorted_indices = list(sorted_indices)[:int(vnum*control_rate)]
+        sorted_names = [int(g.vs[index]["name"]) for index in sorted_indices]
+        print("sorted_node_names: ",sorted_names)
+        # agent_graph.remove_agents_by_ids(sorted_names)
+        for del_agent in agent_graph.get_agents_by_ids(sorted_names):
+            del_agent.user_info.is_controllable = True
+
+    if ban_betweenness:
+    # 计算介数中心性（考虑方向）
+        betweenness = np.array(g.betweenness(directed=True))
+        # 获取介数前十的节点索引
+        sorted_indices = np.argsort(-betweenness)
+        sorted_indices = list(sorted_indices)[:int(vnum*control_rate)]
+        sorted_names = [int(g.vs[index]["name"]) for index in sorted_indices]
+        print("sorted_betw_names: ",sorted_names)
+        for del_agent in agent_graph.get_agents_by_ids(sorted_names):
+            del_agent.user_info.is_controllable = True
+
+
     #mist分析
     # await mist_analysis(agent_graph, "mist/mist_B4.csv")
     
@@ -243,14 +279,16 @@ async def running(
     #         tasks.append(agent.perform_vaccine(post_id))
     # await asyncio.gather(*tasks)
     
+    # agent_graph.visualize("initial_social_graph.png")
 
-    # await mist_analysis(agent_graph, "mist/mist_Aft.csv")
-    Rumor_control_flow = RumorControlFlow(
-        private_territory=anchor_point,
-        anchor_users=anchor_users,
-        specialized_refute= False,
-        agent_graph=agent_graph,
-        )
+    if rumor_control:
+        Rumor_control_flow = RumorControlFlow(
+            private_territory=anchor_point,
+            anchor_users=anchor_users,
+            specialized_refute= True,
+            agent_graph=agent_graph,
+            rumor = rumor,
+            )
 
     for timestep in range(1, num_timesteps + 1):
         os.environ["SANDBOX_TIME"] = str(timestep * 3)
@@ -273,10 +311,13 @@ async def running(
             # else:
             #     await agent.perform_action_by_hci() #手动输入行为
         await asyncio.gather(*tasks)
-        Rumor_control_flow.set_agent_graph(agent_graph)
-        await Rumor_control_flow.kickoff_async()
-        time.sleep(3)
-        # agent_graph.visualize(f"timestep_{timestep}_social_graph.png")
+
+        if rumor_control:
+            Rumor_control_flow.set_agent_graph(agent_graph, timestep)
+            await Rumor_control_flow.kickoff_async()
+        # time.sleep(3)
+    # agent_graph.visualize("end_social_graph.png")
+    # await mist_analysis(agent_graph, "mist/mist_Aft.csv")
 
     await twitter_channel.write_to_receive_queue((None, None, ActionType.EXIT))
     await twitter_task

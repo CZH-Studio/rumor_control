@@ -54,6 +54,7 @@ twhin_tokenizer = AutoTokenizer.from_pretrained(
     model_max_length=512)  # TODO change the pretrained_model_path
 twhin_model = AutoModel.from_pretrained(
     pretrained_model_name_or_path=model_path).to(device)
+twhin_model.eval()
 
 # All historical tweets and the most recent tweet of each user
 user_previous_post_all = {}

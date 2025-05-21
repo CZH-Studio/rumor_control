@@ -1,12 +1,12 @@
-﻿# import pandas as pd
-# import sqlite3
-# db_path = "data\simu_db\yaml_gpt\False_Business_0.db"
-# conn = sqlite3.connect(db_path)
-# query = "SELECT post_id, user_id, original_post_id, content, created_at FROM post"
-# df = pd.read_sql(query, conn)
-# # outputpath = 'result_test.csv'
-# # df.to_csv(outputpath, sep=',', index=False, header=True)
-# print(df)
+﻿import pandas as pd
+import sqlite3
+db_path = "data\simu_db\yaml_gpt\False_Politics_19.db"
+conn = sqlite3.connect(db_path)
+query = "SELECT post_id, user_id, original_post_id, content, created_at FROM post"
+df = pd.read_sql(query, conn)
+outputpath = 'result_test.csv'
+df.to_csv(outputpath, sep=',', index=False, header=True)
+print(df)
 
 # import numpy as np
 # import igraph
@@ -32,3 +32,5 @@
 # l = [{"id": "1", "name": "John"}, {"id": "2", "name": "Jane"}, {"id": "3", "name": "Doe"}]
 # li = json.dumps(l, indent=4)
 # print(li)
+
+#    before you output, you MUST check that the ids you selected are in {candidates}.

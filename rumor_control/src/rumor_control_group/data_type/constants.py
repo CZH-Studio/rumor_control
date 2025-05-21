@@ -7,3 +7,8 @@ he is stubborn, easily believes in rumors and influenced by others. Once believe
 something, its hard for him to change his mind.
 """
 REPRESENTATIVE_REASON_BEEN_CHOSEN = "user is easy to be influenced by others"
+
+DEFAULT_INOCULATION = """the media sometimes does not check facts before publishing
+ information that turns out to be inaccurate！think before you spread it!"""
+DEFAULT_REFUTATION = """the media sometimes does not check facts before publishing
+ information that turns out to be inaccurate！think before you spread it!"""

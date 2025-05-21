@@ -22,9 +22,9 @@ from graph_utils import get_dpeth, get_subgraph_by_time, plot_graph_like_tree
 
 class prop_graph:
 
-    def __init__(self, source_post_content, db_path="", viz=False):
+    def __init__(self, db_path="", viz=False):
         # Source tweet content for propagation
-        self.source_post_content = source_post_content
+        # self.source_post_content = source_post_content
         self.db_path = db_path  # Path to the db file obtained after simulation
         self.viz = viz  # Whether to visualize the result
         # Determine if the simulation ran successfully, False if the db
@@ -86,7 +86,7 @@ class prop_graph:
         try:
             self.end_timestamp = max(timestamps.values()) + 3
         except Exception as e:
-            print(self.source_post_content)
+            # print(self.source_post_content)
             print(f"ERROR: {e}, may be caused by empty repost path")
             print(f"the simulation db is empty: {not self.post_exist}")
             # print("Length of repost path:", len(all_reposts_and_time))

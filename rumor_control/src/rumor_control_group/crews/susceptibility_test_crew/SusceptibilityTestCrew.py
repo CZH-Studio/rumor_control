@@ -25,7 +25,7 @@ class SusceptibilityTestCrew:
     def suscept_evaluation_task(self) -> Task:
         return Task(
             config=self.tasks_config["suscept_evaluation"],
-            output_pydantic=List[dict[str, int|str]],
+            # output_pydantic=List[dict[str, int|str]],
         )
 
     @crew
@@ -34,8 +34,7 @@ class SusceptibilityTestCrew:
         return Crew(
             agents=self.agents,
             tasks=self.tasks,
-            llm="glm-4",
-            memory=True,
+            # memory=True,
             process=Process.sequential,
             verbose=True,
             knowledge_sources=[textknowledge],

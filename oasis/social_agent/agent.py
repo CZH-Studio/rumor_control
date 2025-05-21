@@ -132,10 +132,10 @@ class SocialAgent:
 
     async def perform_action_by_llm(self):
         if self.private_message_id != -1:
-            await self.perform_vaccine(self.private_message_id)
+            env_prompt = await self.env.to_text_prompt(vaccined=True, post_id=self.private_message_id)
             self.private_message_id = -1
-        # Get posts:
-        env_prompt = await self.env.to_text_prompt() #将所有刷新的环境信息整合到提示中
+        else:
+            env_prompt = await self.env.to_text_prompt() #将所有刷新的环境信息整合到提示中
         user_prompt = self.user_info.get_user_description() #将用户信息整合到提示中
         user_msg = BaseMessage.make_user_message(
             role_name="User",
@@ -159,7 +159,7 @@ class SocialAgent:
         openai_messages, _ = self.memory.get_context()
         content = ""
         # sometimes self.memory.get_context() would lose system prompt
-        start_message = openai_messages[0]
+        # start_message = openai_messages[0]
         # if start_message["role"] != self.system_message.role_name:
         #     # print("role: ",start_message["role"])
         #     openai_messages = [{

@@ -1,1 +1,31 @@
-﻿
+﻿reddit:
+For Reddit, the RecSys is modeled based on Reddit’s disclosed post ranking algorithm (Salihefendic,
+ 2015), which calculates a hot score to prioritize posts. This score integrates likes, dislikes, and
+ created time, ensuring that the most recent and popular posts are ranked at the top, while those less
+ popular or controversial rank lower. Specifically, the calculation formula is:
+                    h =log10(max(|u−d|,1))+sign(u−d)· (t−t0)/45000
+ where h indicates the hot score, u represents the number of upvotes, d represents the number of
+ downvotes, and t is the submission time in seconds since the Unix epoch, t0 = 1134028003. it
+ rank the posts based on hot scores to identify the top k posts for recommendation, with the number
+ of recommended posts (i.e., k) varying depending on the experiment
+
+
+tiwtter: 
+For Reddit, the RecSys recommend based on interest matching using TwHIN-BERT, a pre-trained BERT model trained on Twitter data 
+which models user interests based on profiles and recent activities by vectors’ similarity. Factors like 
+recency (prioritizing newer posts) and the number of followers of the post’s creator (simulating superuser 
+broadcasting) are also taken into account to recommend relevant posts.
+specifically, the recommendation algorithm calculates the score between a post and a user using:
+            Score = R×F×S
+ where:
+            R = ln((271.8−(tcurrent −tcreated))/100)
+            F = max(1,log1000(fan_count + 1))
+            S = cosine similarity(Ep,Eu)
+In this context:
+ • R refers to the recency score.
+ • tcurrent represents the current timestamp.
+ • tcreated refers to the timestamp when the post was created.
+ • F refers to the fan count score.
+ • Ep is the embedding of the post content.
+ • Eu is the embedding of the user profile and recent post content.
+ • S refers to the cosine similarity between the embeddings Ep and Eu calculated by TwHIN-BERT.

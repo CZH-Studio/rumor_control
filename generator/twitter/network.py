@@ -41,7 +41,7 @@ for user in tqdm(users, desc="Processing users"):
         topic_users = df[df['category'] == topic]
         topic_user_ids = topic_users['user_id'].tolist()
         # print(topic_user_ids)
-        for user_id in topic_user_ids:
+        for user_id in topic_user_ids: #0.2的概率关注相同话题的博主
             if generate_random_number(0.2):
                 following.append(user_id)
         # print(following)

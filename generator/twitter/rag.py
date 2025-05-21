@@ -47,14 +47,14 @@ class RAG:
 
 
 # retriever
-file_path = './complete_user_char.csv'
+# file_path = './complete_user_char.csv'
 
-loader = CSVLoader(file_path=file_path, encoding='utf-8')
-data = loader.load()
+# loader = CSVLoader(file_path=file_path, encoding='utf-8')
+# data = loader.load()
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000,
-                                               chunk_overlap=200)
-splits = text_splitter.split_documents(data)
+# text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000,
+#                                                chunk_overlap=200)
+# splits = text_splitter.split_documents(data)
 model_name = "BAAI/bge-m3"
 model_kwargs = {"device": "cuda:0"}
 encode_kwargs = {"normalize_embeddings": True}
@@ -112,8 +112,9 @@ topic_system = PromptTemplate(input_variables=["mbti", "age", "gender"],
 # llm
 
 llm = ChatOpenAI(
-    model='gpt-3.5-turbo',
-    api_key=os.environ["OPENAI_API_KEY"],
+    model='glm-4-flash',
+    api_key=os.environ["ZHIPUAI_API_KEY"],
+    base_url=os.environ["ZHIPUAI_API_BASE_URL"],
 )
 
 topic_chain = (topic_system | RunnablePassthrough() | llm
@@ -130,7 +131,8 @@ rag = RAG(llm=llm,
           parser=parser,
           prompt_template=PromptTemplate(
               template="RAG: {examples}\n\nPrompt: {prompt}"),
-          format_func=format_docs)
+          format_func=format_docs
+          )
 
 prompt_tem = """Please generate a social media user profile based on the provided personal information, including a realname, username, user bio, and a new user persona. The focus should be on creating a fictional background story and detailed interests based on their hobbies and profession.
 Input:

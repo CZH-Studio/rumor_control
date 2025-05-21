@@ -1,32 +1,18 @@
-evaluate_candidate:
+rumor_inoculation:
   description: >
-    Evaluate a candidate's bio based on the provided job description.
+    Now there is a rumer post on the social media that is factually wrong: {rumor}. It is now very likely to 
+    spread to user with description {profile}, because user {reason_been_chosen}. To prevent this, we need to 
+    generate a inoculation content to immunize the user against the rumor. you can choose several
+    inoculation methods to generate the content:
+    
+    1. If you can just get people to think about accuracy, then they’re less likely to share bad content.
+    2. By pre-emptively forewarning and exposing people to severely weakened doses of misinformation 
+    (coupled with strong refutations), people can cultivate cognitive resistance against future misinformation
 
-    Use your expertise to carefully assess how well the candidate fits the job requirements. Consider key factors such as:
-    - Skill match
-    - Relevant experience
-    - Cultural fit
-    - Growth potential
-
-    CANDIDATE BIO
-    -------------
-    Candidate ID: {candidate_id}
-    Name: {name}
-    Bio:
-    {bio}
-
-    JOB DESCRIPTION
-    ---------------
-    {job_description}
-
-    ADDITIONAL INSTRUCTIONS
-    -----------------------
-    Your final answer MUST include:
-    - The candidates unique ID
-    - A score between 1 and 100. Don't use numbers like 100, 75, or 50. Instead, use specific numbers like 87, 63, or 42.
-    - A detailed reasoning, considering the candidate’s skill match, experience, cultural fit, and growth potential.
-    {additional_instructions}
+    you can use your knowledge in {topic} to inoculate the rumor.
+    You can resort to knowledge sources for specific explaining of the methods.
+    use a simple, natural and novel toungue so that everyone understand. Don't make it paragraphic.
 
   expected_output: >
-    A very specific score from 1 to 100 for the candidate, along with a detailed reasoning explaining why you assigned this score.
-  agent: hr_evaluation_agent
+    a text that inoculates the rumor.
+  agent: rumor_inoculation_agent
